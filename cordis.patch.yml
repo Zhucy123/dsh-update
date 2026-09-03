@@ -5,4 +5,4 @@
 # in a user patch layer (see README「更新目标目录」).
 - insert:
     - id: dsh-update
-      name: 'dsh-update'
+      name: '@zhucy123/dsh-update'
