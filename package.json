@@ -1,7 +1,7 @@
-﻿{
+{
   "name": "@zhucy123/dsh-update",
-  "version": "1.6.1",
-  "description": "DSH plugin: sidebar footer update button 鈥?compares the local deepseek-harness version with the remote, pulls and reinstalls when a newer version exists, with live progress.",
+  "version": "1.6.2",
+  "description": "DSH plugin: sidebar footer update button — compares the local deepseek-harness version with the remote, pulls and reinstalls when a newer version exists, with live progress.",
   "keywords": ["dsh", "plugin", "deepseek-harness", "update", "harness", "web"],
   "type": "module",
   "main": "lib/index.js",
