@@ -4,7 +4,19 @@
 
 > **npm 包名**:`@zhucy123/dsh-update`(2026-09-02 发布时,裸名 `dsh-update` 已被第三方注册为 1.3KB 占位空壳包,故采用 scoped 名;插件 ID 与 `/api/dsh-update/*` 路由前缀仍为 `dsh-update`,下方 v1.2.0 条目中的历史命令仅作说明)。
 
-## v1.6.2(当前)
+## v1.6.3(当前)
+
+本次更新(**修复 Windows 上更新时因服务占用文件锁而失败回滚的根因问题**):
+
+- **Windows 改为「后台分离更新」模式**:此前整个更新流程(git fetch/stash/checkout → `pnpm install` → `pnpm run build`)都在运行中的 dsh 进程内执行——Windows 上运行中的服务占用旧 `node_modules` 包文件句柄(尤其原生 `.node` 模块),`pnpm install` 删不掉被锁旧包(典型报错 `[WARN] Failed to remove ...\fs-ext@2.1.1`),install 未完成 → 插件按「失败不自伤」自动回滚,更新永远失败
+- **修复方案**:git 步骤(fetch/stash/checkout)不动 `node_modules`,仍留在进程内完成(保持原有冲突检测/自动暂存交互);checkout 成功后,install → stash apply/drop → clean → build → 自动重启 整体移交 **detached 后台进程**(`scheduleDetachedUpdate` + `updateHelperSource`):主进程应答 `done{detached}` 后 4 秒退出、释放全部文件锁,helper 等端口释放后无锁执行 install/build,成功后按原命令拉起新 dsh、失败则自动 `git checkout` 回滚并写日志——全程进度写入 `%TEMP%\dsh-update-apply-*.log` 便于页面断开后排障
+- **客户端配套**:done 携带 `detached` 时渲染专用卡片(「更新已转入后台执行」,不再误显示绿色「更新成功」);更新前/更新中提示在 Windows 客户端额外说明「页面会断开、后台完成并自动重启」;后台日志路径展示在结果卡片上
+- **提醒链路完整覆盖**(页面断开前后):① 点「开始更新」前 Windows 客户端追加后台模式说明;② 更新中(updating 视图)高亮横幅「git 步骤完成后本页面会断开…」;③ 交接瞬间服务端追加 notice;④ done 卡片;⑤ 交接后本进程 **4 秒**后才退出(原 1.5 秒),给用户读完提示的窗口;⑥ **页面恢复后确认**:`/status` 新增 `lastUpdate` 字段,解析最新 `dsh-update-apply-*.err.log` 给出「✓ 上次后台更新已完成:版本 X(时间)」或「⚠ 上次后台更新未完成/已回滚」,用户刷新后打开面板即可确认后台更新结果
+- **可配置**:`config.windowsDetachedUpdate: false` 可关闭后台分离模式,回到旧的进程内 install/build 路径(Windows 上大概率因文件锁再次失败,仅供排查)
+- POSIX(macOS/Linux)流程不变——POSIX 允许 unlink 被打开的文件,进程内 install 无锁冲突
+- 行为无其它变化;`link:` 安装改源码即生效,重启一次 `dsh web` 后新流程可用
+
+## v1.6.2
 
 本次更新(**修复 scoped 包名发布后插件无法加载的 bug**):
 

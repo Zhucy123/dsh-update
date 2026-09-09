@@ -74,13 +74,14 @@ flowchart TD
 
 | 平台 | 支持 | 说明 |
 |------|------|------|
-| Windows | ✅ | `pnpm` 经 shell 走 `.cmd` shim;重启以 PowerShell `-WindowStyle Hidden` + `windowsHide` 静默拉起(v1.6.1,`detached: false` 修复 Node.js #51018) |
+| Windows | ✅ | `pnpm` 经 shell 走 `.cmd` shim;重启以 PowerShell `-WindowStyle Hidden` + `windowsHide` 静默拉起(v1.6.1,`detached: false` 修复 Node.js #51018);更新走「后台分离」模式(v1.6.3,见下) |
 | Linux | ✅ | pnpm 直接二进制运行;缺失时回退 `corepack pnpm`(v1.6.0) |
 | macOS | ✅ | 与 Linux 相同;git / pnpm 缺失时快速失败而非挂到超时(v1.6.0) |
 
 - 路径统一经 `node:path` 处理,不写死分隔符;git 命令跨平台。
 - 重启机制跨平台:POSIX 用 `detached: true`(Node 内部 `setsid`)让新进程成为独立会话/进程组,脱离控制终端——关闭启动它的终端/窗口不影响服务,输出重定向到 tmpdir 日志文件,全程静默(v1.5.2 / v1.6.0)。
 - systemd(Linux)托管时自动禁用自重启(supervisor 负责拉起);launchd 等未识别场景默认允许自重启。
+- **Windows 后台分离更新(v1.6.3)**:Windows 上运行中的 dsh 服务占用旧 `node_modules` 文件句柄,进程内 `pnpm install` 删不掉被锁包(报 `[WARN] Failed to remove ...`)必然失败并触发自动回滚。故 Windows 下更新在 git 步骤(checkout)完成后**自动移交 detached 后台进程**:本进程退出释放句柄,后台进程等端口释放后执行 install → stash apply → clean → build,成功后自动重启 dsh、失败则回滚并写日志(`%TEMP%\dsh-update-apply-*.log`)。页面会在交接时断开,属正常现象,稍后刷新即可。可设 `windowsDetachedUpdate: false` 关闭(POSIX 无此问题,保持进程内更新)。
 
 ## 要求 Requirements
 
@@ -164,6 +165,7 @@ dsh web
 | `DSH_UPDATE_GIT_PROXY` | `gitProxy` | GitHub 镜像前缀,用于直连超时后的回退;空字符串 `""` 关闭镜像回退 | `https://gh-proxy.com/` |
 | — | `allowRestart` | 是否允许自重启;systemd 托管时自动禁用 | `true` |
 | — | `autoRestart` | 更新/回退成功后是否自动重启约 2 秒后 | `true`(受 `allowRestart` 约束) |
+| — | `windowsDetachedUpdate` | Windows 是否启用「后台分离更新」(v1.6.3):git 步骤后移交 detached 进程执行 install/build,本进程退出释放文件锁;设 `false` 回到旧的进程内路径(Windows 上大概率因文件锁失败,仅供排查) | `true`(仅 Windows 生效) |
 | `DSH_UPDATE_RESTART_SCRIPT` | — | 已废弃(v1.1.0 起 UI 不再使用);host 端 status 仍透传该值,仅为兼容 | — |
 
 > 插件在**运行时**动态读取仓库目录等本地路径(`process.cwd()` / 环境变量),不会写死进源码。
