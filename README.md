@@ -2,7 +2,7 @@
 
 > One-click update for your local [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) checkout: compare versions → confirm → pull & rebuild → restart, all from a sidebar panel with live progress.
 
-![Version](https://img.shields.io/badge/version-1.6.2-4f8cff)
+![Version](https://img.shields.io/badge/version-1.7.0-4f8cff)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4f8cff)
 ![DSH](https://img.shields.io/badge/DSH%20plugin-web-blue)
@@ -74,14 +74,14 @@ flowchart TD
 
 | 平台 | 支持 | 说明 |
 |------|------|------|
-| Windows | ✅ | `pnpm` 经 shell 走 `.cmd` shim;重启以 PowerShell `-WindowStyle Hidden` + `windowsHide` 静默拉起(v1.6.1,`detached: false` 修复 Node.js #51018);更新走「后台分离」模式(v1.6.3,见下) |
+| Windows | ✅ | `pnpm` 经 shell 走 `.cmd` shim;重启以 PowerShell `-WindowStyle Hidden` + `windowsHide` 静默拉起(v1.6.1,`detached: false` 修复 Node.js #51018);更新默认走**进程内**路径,可选启用「后台分离」模式(v1.6.3 引入 / v1.7.0 起默认关闭,见下) |
 | Linux | ✅ | pnpm 直接二进制运行;缺失时回退 `corepack pnpm`(v1.6.0) |
 | macOS | ✅ | 与 Linux 相同;git / pnpm 缺失时快速失败而非挂到超时(v1.6.0) |
 
 - 路径统一经 `node:path` 处理,不写死分隔符;git 命令跨平台。
 - 重启机制跨平台:POSIX 用 `detached: true`(Node 内部 `setsid`)让新进程成为独立会话/进程组,脱离控制终端——关闭启动它的终端/窗口不影响服务,输出重定向到 tmpdir 日志文件,全程静默(v1.5.2 / v1.6.0)。
 - systemd(Linux)托管时自动禁用自重启(supervisor 负责拉起);launchd 等未识别场景默认允许自重启。
-- **Windows 后台分离更新(v1.6.3)**:Windows 上运行中的 dsh 服务占用旧 `node_modules` 文件句柄,进程内 `pnpm install` 删不掉被锁包(报 `[WARN] Failed to remove ...`)必然失败并触发自动回滚。故 Windows 下更新在 git 步骤(checkout)完成后**自动移交 detached 后台进程**:本进程退出释放句柄,后台进程等端口释放后执行 install → stash apply → clean → build,成功后自动重启 dsh、失败则回滚并写日志(`%TEMP%\dsh-update-apply-*.log`)。页面会在交接时断开,属正常现象,稍后刷新即可。可设 `windowsDetachedUpdate: false` 关闭(POSIX 无此问题,保持进程内更新)。
+- **Windows 后台分离更新(v1.6.3 引入,v1.7.0 起默认关闭)**:Windows 上运行中的 dsh 服务可能占用旧 `node_modules` 文件句柄,进程内 `pnpm install` 删不掉被锁包(报 `[WARN] Failed to remove ...`)会失败并触发自动回滚。为此提供**可选**的「后台分离」模式:设 `config.windowsDetachedUpdate: true` 后,更新在 git 步骤(checkout)完成后自动移交 detached 后台进程——本进程退出释放句柄,后台进程等端口释放后执行 install → stash apply → clean → build,成功后自动重启 dsh、失败则回滚并写日志(`%TEMP%\dsh-update-apply-*.log`)。代价是**页面会在交接时断开**,需稍后刷新。**默认不启用**:进程内路径进度全程可见、不会断开,只有真的撞上文件锁时才有必要开启。
 
 ## 要求 Requirements
 
@@ -165,7 +165,7 @@ dsh web
 | `DSH_UPDATE_GIT_PROXY` | `gitProxy` | GitHub 镜像前缀,用于直连超时后的回退;空字符串 `""` 关闭镜像回退 | `https://gh-proxy.com/` |
 | — | `allowRestart` | 是否允许自重启;systemd 托管时自动禁用 | `true` |
 | — | `autoRestart` | 更新/回退成功后是否自动重启约 2 秒后 | `true`(受 `allowRestart` 约束) |
-| — | `windowsDetachedUpdate` | Windows 是否启用「后台分离更新」(v1.6.3):git 步骤后移交 detached 进程执行 install/build,本进程退出释放文件锁;设 `false` 回到旧的进程内路径(Windows 上大概率因文件锁失败,仅供排查) | `true`(仅 Windows 生效) |
+| — | `windowsDetachedUpdate` | Windows 是否启用「后台分离更新」(v1.6.3 引入,**v1.6.4 起默认关闭**):设 `true` 时 git 步骤后移交 detached 进程执行 install/build,本进程退出释放文件锁(页面会断开);默认 `false` 走**进程内更新**——面板全程显示实时进度、不会中途断开,若 `pnpm install` 因文件锁失败会自动回滚到更新前版本 | `false` |
 | `DSH_UPDATE_RESTART_SCRIPT` | — | 已废弃(v1.1.0 起 UI 不再使用);host 端 status 仍透传该值,仅为兼容 | — |
 
 > 插件在**运行时**动态读取仓库目录等本地路径(`process.cwd()` / 环境变量),不会写死进源码。
@@ -209,7 +209,7 @@ dsh plugin --profile web add link:$(pwd)
 
 ## 版本历史 Changelog
 
-最新版本 **v1.6.2**(修复 scoped 包名发布后插件无法加载的问题:将 `cordis.patch.yml` 的 loader `name:` 与 `lib/client.js` 的浏览器注册 ID 统一为 scoped 包名 `@zhucy123/dsh-update`)。完整逐版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+最新版本 **v1.7.0**(**Windows 默认回到「进程内更新」**:`windowsDetachedUpdate` 默认由 `true` 改为 `false`——更新全程在同一进程内执行,面板持续显示实时进度、不再中途断开刷新,想继续看到「页面变空白/进度可见」的旧体验直接可用;需要绕开 `node_modules` 文件锁时再显式设 `true` 启用后台分离模式)。完整逐版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## License
 

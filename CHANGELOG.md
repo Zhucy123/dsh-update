@@ -4,7 +4,33 @@
 
 > **npm 包名**:`@zhucy123/dsh-update`(2026-09-02 发布时,裸名 `dsh-update` 已被第三方注册为 1.3KB 占位空壳包,故采用 scoped 名;插件 ID 与 `/api/dsh-update/*` 路由前缀仍为 `dsh-update`,下方 v1.2.0 条目中的历史命令仅作说明)。
 
-## v1.6.3(当前)
+## v1.7.0(当前)
+
+本次更新(**Windows 默认回到「进程内更新」——恢复页面全程可见进度的旧体验**):
+
+- **`windowsDetachedUpdate` 默认值由 `true` 改为 `false`**:v1.6.3 为解决 Windows 上 `pnpm install` 删不掉被锁旧包的问题,把 install/build 默认移交 detached 后台进程,代价是**交接后页面断开、进度看不全、需要刷新**。现在恢复默认走**进程内**路径:整个更新(fetch → stash → checkout → install → clean → build → 重启)都在同一个进程里跑,面板持续输出实时进度、不会中途断开——就是 v1.6.2 之前的使用体验
+- **后台分离模式改为按需开启**:若确实撞上文件锁(`pnpm install` 因 `[WARN] Failed to remove ...` 失败并回滚),在 profile 的 `cordis.patch.yml` 给该 bundle 加 `config: { windowsDetachedUpdate: true }` 即可切回后台模式。失败时插件仍按「失败不自伤」自动回滚,工作树不会停在半更新状态
+- **客户端提示不再靠 UA 猜**:面板此前用 `navigator.userAgent` 判断 Windows 并显示「页面会断开、更新转入后台」警告——在默认(进程内)模式下这是**误导性**提示。现在服务端 `/status` 新增 `detachedUpdate` 字段(由平台 + config 真实判定),客户端据此显示对应文案;进程内模式下改为明确提示「进度会一直显示在本面板上,不会中途断开」
+- **修正两处中英文分支写反**:`available` 视图里的两段 Windows detached 说明(`autoRestart` 开 / 关两种情形),`en ? … : …` 三元里英文分支写的却是中文(反之亦然),英文界面下会显示中文
+- 保留 v1.6.3 的后台分离实现与 v1.6.4 的配套修复(交接卡片标题、隐藏重启按钮防双进程抢端口、交接空窗期并发保护)——显式开启该模式时依然生效
+- 行为无其它变化;`link:` 安装改源码即生效,重启一次 `dsh web` 后新默认值可用
+
+## v1.6.4
+
+本次更新(**v1.6.3「Windows 后台分离更新」的配套修复 + 健壮性加固**):
+
+- **后台交接卡片标题不再自相矛盾**:done 携带 `detached` 时标题此前仍按 `ok:true` 渲染成「**更新完成**」,与卡片正文「更新已转入后台执行」互相打架,容易让用户误以为已更新成功。现在 detached 单独渲染标题「更新已转入后台执行」
+- **后台交接时隐藏「重启DSH / 立即重启」按钮**:交接后 update helper 已在等端口释放并自行拉起新 dsh;此时用户点重启会走 `/restart` 再生成一个 restart helper,两个 helper 各自拉起 dsh 并抢同一个端口(`restartScheduled` latch 只约束 `/restart` 路由,管不到 update helper)。detached 卡片现在只保留「重新检查」
+- **更新说明支持 Markdown 语法**:GitHub Releases API 的 `body` 返回的是 Markdown 源码,此前只识别 `<h3>…</h3>`,用 `### 小标题` 写法会原样显示成「### xxx」。现在同时支持 `#`~`######`、`* / -` 与 `1.` 列表,并剥离 `[文字](链接)` 只留文字(不再露出裸 Markdown)
+- **断网 / 远程检查失败时仍可回退**:「版本回退」入口此前要求 `status.error === undefined`,GitHub 不可达(直连与镜像均失败)时整块回退 UI 被隐藏——而回退完全离线(用本地 `git tag -l`),恰恰是断网时最需要。现在只要有可选历史 tag 就显示;没有时明确说明「本地尚未拉取到其它 dsh-v* tag」,而非默默不显示
+- **react-dom 未注入时不再点不动**:`ReactDOM` 为 null 时此前无条件 `createPortal`,点按钮直接抛 TypeError、面板永远打不开且无任何提示;现在降级为就地渲染,面板照常可用
+- **后台交接的 4 秒空窗期并发保护生效**:`endRun()` 会清掉 `activeRun`,而本进程还要活 4 秒才退出,这期间另一个标签页可再次触发 `/run` 或 `/restart`。新增 `handingOff` 标志,`/run` 与 `/restart` 统一用 `updateInFlight()`(activeRun ‖ handingOff)判定,空窗期继续返回 409
+- **`/status` 不再每次全量扫描临时目录**:「上次后台更新」结果(`lastDetachedUpdate`)按 mtime 缓存 5 秒,避免开面板时反复 `readdirSync` + 逐个 `statSync` 整个 tmpdir
+- **失败自动回滚不再指向 `unknown`**:`localVersion()` 取不到 commit 时原本返回字符串 `'unknown'`,而它被当作回滚 checkout 目标,会产生 `git checkout unknown` 这种必然失败的回滚;改为返回 undefined
+- 修正一处过期注释(自动重启倒计时早已是 2 秒,注释仍写 8 秒);README 版本徽章与「版本历史」章节同步到当前版本(v1.6.3 发布时漏改,仍显示 1.6.2)
+- 行为无其它变化;`link:` 安装改源码即生效,重启一次 `dsh web` 后 host 端改动生效
+
+## v1.6.3
 
 本次更新(**修复 Windows 上更新时因服务占用文件锁而失败回滚的根因问题**):
 
