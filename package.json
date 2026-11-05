@@ -1,6 +1,6 @@
 {
   "name": "@zhucy123/dsh-update",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "DSH plugin: sidebar footer update button — compares the local deepseek-harness version with the remote, pulls and reinstalls when a newer version exists, with live progress.",
   "keywords": ["dsh", "plugin", "deepseek-harness", "update", "harness", "web"],
   "type": "module",
@@ -29,5 +29,8 @@
   },
   "bugs": { "url": "https://github.com/Zhucy123/dsh-update/issues" },
   "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "publishConfig": { "access": "public" }
 }

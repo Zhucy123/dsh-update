@@ -4,7 +4,20 @@
 
 > **npm 包名**:`@zhucy123/dsh-update`(2026-09-02 发布时,裸名 `dsh-update` 已被第三方注册为 1.3KB 占位空壳包,故采用 scoped 名;插件 ID 与 `/api/dsh-update/*` 路由前缀仍为 `dsh-update`,下方 v1.2.0 条目中的历史命令仅作说明)。
 
-## v1.7.0(当前)
+## v1.8.0(当前)
+
+本次更新(**手动更新到 alpha 仍然可用,但缺 contextMenus / 残留 lib/ / 插件加载失败不再把 Web UI 留在坏状态**):
+
+- **不屏蔽 alpha 通道**:`dsh-v*` 比较仍包含 prerelease。有新版时除了「开始更新」到最新 tag,还可以在「指定版本(含 alpha)」里选任意本地 tag。回退列表同样保留 alpha
+- **fetch 之后重算目标**:checkout 用的 tag 在 `git fetch --tags` 成功后重新取远程最新 tag(失败则用刚拉到的本地 tag),不再沿用打开面板时缓存的 `remoteTag`
+- **检出前 requiredPaths**:默认必须能在目标 tag 里找到 `packages/client/ui-context-menu/package.json`。缺少则拒绝,中英文说明该 tag 没有 `contextMenus`、旧 `lib/` 会让页面停在 `Failed to load plugins` / `N entries did not activate`。面板提供「仍要检出」覆盖;`config.allowMissingRequiredPaths: true` 或 `requiredPaths: []` 可放宽。环境变量 `DSH_UPDATE_REQUIRED_PATHS`(逗号分隔)同样有效
+- **残留 lib/ 只删白名单内的孤儿目录**:检出后,若某个包在旧树有 `package.json`、新树没有,且路径位于 `packages/` 或 `apps/`(可用 `orphanLibRoots` 改),删除该包下的 `lib/`。拒绝 `..`、绝对路径和指向仓库外的真实路径;符号链接只解除链接本身
+- **`pnpm run clean` 失败即失败**:不再警告后继续 build。install / clean / build 失败都会 checkout 回更新前的 tag(或 commit),并重新 install、clean、build
+- **启动健康检查**:自动重启开启时,构建成功后拉起新 dsh,在端口起来后再观察 `bootHealthWindowMs`(默认 15 秒)。日志出现 `did not activate`(不含 `0 entries did not activate`)、`Failed to load plugins` 或同一行里的 HARNESS + plugin + fail,就杀掉新进程、回到上一版本并重新构建。成功必须看到干净的启动窗口,而不是只看 build 退出码。自动重启关闭时面板会写明「未做启动检查」
+- **插件 peer 提示**:更新前扫描 `~/.dsh/profiles/*/package.json`、直接依赖,以及 `plugins/` 下的 package.json。名称里带 dsh / harness / deepseek 的 peer 若罩不住目标版本(含 alpha 不满足稳定 range 的 WorkBuddy 式钉版本),默认 `confirm` 列出冲突后才继续。`peerConflictPolicy` 还可设为 `block` 或 `ignore`
+- 新增 `node --test test/update-safety.test.mjs` 覆盖 tag 比较、semver/peer、requiredPaths、残留 lib/ 删除和启动日志判定
+
+## v1.7.0
 
 本次更新(**Windows 默认回到「进程内更新」——恢复页面全程可见进度的旧体验**):
 
