@@ -61,7 +61,7 @@ git fetch --tags → 找到最新的 dsh-v* → 停掉服务 → git checkout �
 
 更新一开始浮层就消失，**按钮自己变成进度条**——填充宽度就是百分比，文字显示当前阶段和进度：
 
-<p align="left"><img src="docs/images/button-progress.png" width="100" alt="执行更新时的按钮：填充条覆盖 52%，显示「安装 52%」"></p>
+<p align="left"><img src="docs/images/button-progress.png" width="138" alt="执行更新时的按钮：进度条填充到 52%，文字显示「安装 52%」"></p>
 
 ## 特性
 
