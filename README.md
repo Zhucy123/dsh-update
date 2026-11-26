@@ -33,22 +33,20 @@ DeepSeek Harness 网页版（web）是用你自己的本地仓库跑的，升级
 
 按钮在侧栏底部，**宽度跟着文字走**，不撑满整行。同一行里兄弟按钮高度接近就并排，差得多就自己占一行——下面这张图中 Remote 是 42px、我们是 32px，所以各占一行：
 
-<p align="left"><img src="docs/images/sidebar-layout.png" width="220" alt="侧栏底部：Remote 与「检查更新」，两者高度不同，各占一行"></p>
+<p align="left"><img src="docs/images/sidebar-layout.png" width="246" alt="侧栏底部：Remote 与「检查更新」，两者高度不同，各占一行"></p>
 
 ### 检查更新浮层
 
-点开是贴着按钮弹出的浮层，不是全屏遮罩。侧栏折叠到 98px 宽时它照样完整：
-
-<p align="left"><img src="docs/images/panel-zh.png" width="341" alt="检查更新浮层：网络来源、自动检查、版本对比、切换到其它版本"></p>
+点开是贴着按钮弹出的浮层，不是全屏遮罩。它被 portal 到 `body` 并固定定位，所以侧栏折叠成窄条时也不会被裁掉：
 
 <table>
 <tr>
-<td><img src="docs/images/panel-collapsed.png" width="330" alt="侧栏折叠时浮层仍然完整"></td>
-<td><img src="docs/images/panel-en.png" width="330" alt="English 界面"></td>
+<td><img src="docs/images/panel-zh.png" width="300" alt="检查更新浮层：网络来源、自动检查、版本对比、切换到其它版本"></td>
+<td><img src="docs/images/panel-en.png" width="300" alt="English 界面"></td>
 </tr>
 <tr>
-<td align="center"><sub>侧栏折叠到 98px，浮层照常显示</sub></td>
-<td align="center"><sub>English（三语之一）</sub></td>
+<td align="center"><sub>中文</sub></td>
+<td align="center"><sub>English</sub></td>
 </tr>
 </table>
 
