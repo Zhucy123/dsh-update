@@ -218,30 +218,25 @@ Windows 上跑着的 `dsh` 可能占着旧 `node_modules` 的文件句柄，进�
 
 ```mermaid
 flowchart TD
-    A[点「检查更新」] --> B[GET /api/dsh-update/status]
-    B --> C{发现新 dsh-v* tag?}
-    C -- 否 --> D[已是最新<br/>提供「切换到其它版本」]
-    C -- 是 --> E[显示本地 / 远程版本<br/>+ 本次更新内容]
-    E --> F[点「开始更新」]
-    F --> G[git fetch --tags]
-    G --> R[按 fetch 结果重算目标<br/>alpha 仍参与比较]
-    R --> P{requiredPaths 齐全?}
-    P -- 否 --> Q[拒绝检出<br/>可显式覆盖]
-    P -- 是 --> PE{peer 冲突?}
-    PE -- 是 --> PF[列出后等确认]
-    PE -- 否 --> S[git stash push -u]
-    PF --> S
-    S --> H[git checkout tag]
-    H --> OL[清理已消失包的 lib/]
-    OL --> I[pnpm install]
-    I --> J[pnpm run clean]
-    J --> K[pnpm run build]
-    K --> L{全部成功?}
-    L -- 否 --> M[回滚：checkout 原版本<br/>重新 install / clean / build]
-    L -- 是 --> N[自动重启并观察启动日志]
-    N --> O{日志干净?}
-    O -- 否 --> M
-    O -- 是 --> T[恢复 stash<br/>更新完成]
+    A[点「检查更新」] --> B[/status 比对版本/]
+    B --> C{有新 tag?}
+    C -- 否 --> D[已是最新]
+    C -- 是 --> E[展示版本差异]
+    E --> F[fetch --tags<br/>重算目标]
+    F --> G{必需路径齐全?}
+    G -- 否 --> H[拒绝检出]
+    G -- 是 --> I{peer 冲突?}
+    I -- 是 --> J[等用户确认]
+    I -- 否 --> K[stash push -u]
+    J --> K
+    K --> L[checkout tag<br/>清理残留 lib/]
+    L --> M[install / clean / build]
+    M --> N{全部成功?}
+    N -- 否 --> O[回滚原版本<br/>重新构建]
+    N -- 是 --> P[重启<br/>观察启动日志]
+    P --> Q{日志干净?}
+    Q -- 否 --> O
+    Q -- 是 --> R[恢复 stash<br/>完成]
 ```
 
 ### API 路由
