@@ -7,7 +7,7 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4f8cff)
 ![DSH](https://img.shields.io/badge/DSH%20plugin-web-blue)
 
-dsh-update 是 DSH Web GUI 的 **Profile Bundle 插件**:在**侧边栏底部(设置按钮上方)**加一个「⭯ 更新DSH」圆形按钮。点击后对比本地 checkout 与远程 `dsh-v*` 发布 tags;**发现新版本时不自动动手**,先展示本地/远程版本与本次更新内容,由你点「开始更新」后才执行 `git fetch → checkout → pnpm install → clean → build`,完成后自动(或一键)重启 dsh。插件界面中英双语,跟随 DSH 界面语言实时切换。
+dsh-update 是 DSH Web GUI 的 **Profile Bundle 插件**:在**侧边栏底部(设置按钮上方)**加一个「🔍 检查更新」按钮;它**独占一行**(其他插件如 DS Bot / remote 的按钮排在相邻行),不再和其他插件的按钮挤在同一行。点击后对比本地 checkout 与远程 `dsh-v*` 发布 tags;**发现新版本时不自动动手**,先展示本地/远程版本与本次更新内容,由你点「开始更新」后才执行 `git fetch → checkout → pnpm install → clean → build`,完成后自动(或一键)重启 dsh。插件界面中英双语,跟随 DSH 界面语言实时切换。
 
 ## 目录
 
@@ -44,7 +44,7 @@ dsh-update 是 DSH Web GUI 的 **Profile Bundle 插件**:在**侧边栏底部(�
 
 ## 界面速览 Usage
 
-1. 启动 dsh web,侧边栏底部、设置按钮上方出现「⭯ 更新DSH」圆形按钮。
+1. 启动 dsh web,侧边栏底部、设置按钮上方出现「🔍 检查更新」按钮,单独占一行。
 2. 点击打开面板:自动检查并显示 **本地版本 / 远程版本 / 是否可更新**。
 3. 有新版 → 预览「本次更新内容」→ 点「开始更新」,或在「指定版本(含 alpha)」里选一个 tag。构建阶段页面可能突然变空白。
 4. 构建完成后会重启并检查插件是否加载成功。日志里若出现 `Failed to load plugins` / `did not activate`,会自动回到更新前的版本。页面恢复后重新打开面板,可看到上次结果。
@@ -54,7 +54,7 @@ dsh-update 是 DSH Web GUI 的 **Profile Bundle 插件**:在**侧边栏底部(�
 
 ```mermaid
 flowchart TD
-    A[点击「⭯ 更新DSH」按钮] --> B[GET /api/dsh-update/status]
+    A[点击「检查更新」按钮] --> B[GET /api/dsh-update/status]
     B --> C{发现新版 dsh-v* tag?}
     C -- 否 --> D[已是最新<br/>提供「版本回退」]
     C -- 是 --> E[展示 本地 / 远程版本<br/>+ 本次更新内容<br/>「开始更新」按钮]
@@ -138,7 +138,7 @@ dsh web
 
 > npm / git 安装会在 web profile 目录里执行 `pnpm add`,成功后对账插件层:检测到本插件声明 `dsh.bundle`,会自动把它追加进 `dsh.profile.bundles` 并注册进 Cordis loader 树,**一步装完即用**;源码会被**实际拷贝**到 node_modules,改动源码需重新安装(不像 `link:` 是符号链接、改源码即生效)。
 
-装完**完全重启 DSH web**(不是刷新页面,不是另开终端跑 `dsh web`,而要停掉旧进程后重新启动),然后在**侧边栏底部、设置按钮上方**应出现「⭯ 更新DSH」圆形按钮。
+装完**完全重启 DSH web**(不是刷新页面,不是另开终端跑 `dsh web`,而要停掉旧进程后重新启动),然后在**侧边栏底部、设置按钮上方**应出现「🔍 检查更新」按钮(独占一行)。
 
 ## 验证与排障
 
@@ -147,7 +147,7 @@ dsh web
 1. **依赖已写入**:`~/.dsh/profiles/web/package.json` 的 `dependencies` 里应有 `"@zhucy123/dsh-update"`(方式是 `link:` 或 git/npm)。
 2. **已加入配置层**:`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 列表里应有 `@zhucy123/dsh-update`(`dsh plugin add` 自动写入,无需手动编辑)。
 3. **依赖已就位**:`~/.dsh/profiles/web/node_modules/@zhucy123/dsh-update` 存在——`link:` 方式为指向源码目录的符号链接(Windows 下显示为 `Junction`),git / npm 方式为实际拷贝的目录,均属正常。
-4. **重启后按钮可见**:侧边栏底部设置按钮上方应出现「⭯ 更新DSH」按钮;点开可看到版本对比面板而非报错。
+4. **重启后按钮可见**:侧边栏底部设置按钮上方应出现「🔍 检查更新」按钮;点开可看到版本对比面板而非报错。
 
 ### 常见排障
 

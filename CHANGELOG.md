@@ -4,7 +4,107 @@
 
 > **npm 包名**:`@zhucy123/dsh-update`(2026-09-02 发布时,裸名 `dsh-update` 已被第三方注册为 1.3KB 占位空壳包,故采用 scoped 名;插件 ID 与 `/api/dsh-update/*` 路由前缀仍为 `dsh-update`,下方 v1.2.0 条目中的历史命令仅作说明)。
 
-## v1.8.0(当前)
+## v1.9.0(当前)
+
+本次更新(**侧栏底部改为独占一行的「检查更新」**):
+
+- **判定再补 3 类残留形状**（复审第五轮指出，均一行改动）:① `GIT_CONFIG_KEY_n` 不含点（`foo`）或纯空白——git 报 `key does not contain a section`,合法 git key 必须是 `section.name`,已加校验;② Windows 环境变量名不区分大小写,小写 `git_config_count` 写法 git 也照吃,正则加 `/i` 且取值改为大小写不敏感查找;③ 测试里 `assert.throws` 的 git stderr 噪声已静音
+### 第四轮核验修复：环境注入的完整闭环
+
+发现一类能让整个更新流程瘫痪、但报错完全看不出根因的环境问题：父进程残留一组**不完整**的 `GIT_CONFIG_COUNT/KEY/VALUE` 注入（某些 CLI 会设置却不留 KEY），git 遇到这种组合会对**任何**命令报 `error: missing config key GIT_CONFIG_KEY_0` 并拒绝执行。
+
+- **`sanitizeGitEnv()` 下沉到 `lib/safety.js`**:此前只挂在 `lib/index.js` 的 `GIT_ENV` 上,而 `safety.js` 有自第二份未清理的 `GIT_ENV`(`revisionHasPath` / `listPackageDirs` 用)。后果实测:健康 tag 被误判成「缺少必需路径」→ 报「此版本会损坏 Web UI」→ 更新在闸门处中止,失败点只是往后挪了一步。现在两份 `GIT_ENV` 共用同一判据
+- **判定从严**:原来只挡「COUNT>0 但 KEY 缺失」。实测补全另外 5 类同样让 git 全挂的形状:COUNT 非数字 / 带尾随字符 / 负数 / 前后空格、KEY 在但 VALUE 缺、KEY 为空;以及 `GIT_CONFIG_PARAMETERS` 畸形、有 KEY/VALUE 却无 COUNT。任一不自洽即整组剥离,完整合法的注入原样保留
+- **超大 COUNT 不再卡死 host**:原来按 `count` 循环清理,`GIT_CONFIG_COUNT=1e9` 会在模块加载时同步冻结进程(实测 3e6 已 264ms)。改为按实际存在的键删、并把 count 上限设为 256;`parseInt` 换成严格 `/^\d+$/`
+- **helper 进程不再继承污染环境**:三处 `spawn(helper, { env: process.env })` 改为 `sanitizeGitEnv(process.env)`。这条最关键——helper 内部的 `gitEnv = {...process.env}` 与 `runPnpm` 都继承它,污染时启动不健康的 `rollback()`(status/stash/checkout)全失败,「失败不自伤」的自动回滚随之失效
+- **`createProcessRunners.runCommand` 补 `env`**:它此前没有 env 字段、默认继承 host 的污染环境
+- **`pendingBootCheck` 只给 build 路径**:detached 也置位会让客户端显示「正在检查启动是否健康」而不是「已转入更新后台执行」(客户端该分支排在 detached 之前)
+- **测试**:`sanitizeGitEnv` 从「只验返回对象形状」升级为 10 类畸形形状的表格断言,并新增 `a git call survives a poisoned GIT_CONFIG_* environment`——先断言污染环境下 git 确实失败(否则测试证明不了什么),再断言清理后真能跑通
+
+### 复杂度与测试收尾（第三轮 🟡）
+- **`performRollback` 的越界引用修复**:抽取时把 `orphanLibRoots` 加进了 ctx 解构,却漏改体内那处 `options.orphanLibRoots`——`options` 在模块级作用域不存在,一回滚就 `ReferenceError`。已改为用 ctx 传入值,并新增行为测试 `performRollback reports failure instead of throwing when it cannot restore`(在真实 git 仓库上跑一次注定失败的回滚,断言不抛异常且如实报告)
+
+- **`runUpdateStreaming` 拆分**:699 行 → 518 行。抽出三个模块级单元,每个都是「与主状态机无关的独立关注点」:
+  - `createProcessRunners()` — 107 行 git/pnpm 子进程管线(spawn、按行切分、超时兜底、错误归一),纯管道无状态判断
+  - `performRollback()` — 94 行失败回滚(checkout → 清理 lib/ → install/clean/build → stash 复原),「失败怎么收场」与「正常怎么更新」分离
+  - `buildDoneEvent()` — 成功 done 的唯一生成点,收拢客户端依赖的隐式字段契约
+  目的不是数字好看,而是让「状态机在哪」看得见——此前三个阶段(正常流程 / 回滚 / 事件契约)混在一个函数里,detached 分支把 `autoRestart` 写死就是这种混编的产物
+- **新增 3 条运行时测试**(此前全是源码正则 + 纯函数):
+  - `runUpdateStreaming resolves and closes the stream on a non-git directory` — stub 一个 `res` 真跑,断言一定写 done 且 `end()`
+  - `buildDoneEvent keeps autoRestart honest for both modes` — 直接验证构造器在 build/detached/关闭三种模式下的字段
+  - `createProcessRunners streams a real git command and reports its exit code` — 在真实临时 git 仓库里跑一条命令穿过抽取后的管线
+- **测试断言升级**:删掉三条「全文找字符串」的弱断言(done 字面量 ×2、restart window ×1),换成「成功 done 只能由 `buildDoneEvent` 产生」的结构性护栏 + 上面的运行时测试
+
+### 第三轮终审修复
+
+- **🔴 helper 回滚会静默移走「仅未跟踪 / 仅已暂存」的本地改动**:判定改 `git diff --quiet` 时,它只看「已跟踪且未暂存」——只有未跟踪文件、或只有 staged 改动时都返回 exit 0,而 `git stash push -u` 照样会把它们收进 stash。后果是 push 了却不置 `reStashed`,回滚后永不 apply,用户的文件静默从工作树消失(数据仍在 stash 但无任何提示)。实测两个场景均复现。现在 helper 的 `run()` 也收集 stdout,判定统一改用 `git status --porcelain`(与 host 的 `rollbackRebuild` 同一口径)
+- **🟡 `armRestartWatch` 的基准判定修正**:`before === undefined`(初始 /ping 失败)时原来把首次见到的 boot 直接当基准——若重启已开始,那可能已是新进程,之后永不变化导致**永不刷新**。改为「连续两次看到同一 boot」才算稳定基准
+- **🟡 `rbBlocked` 清空路径补全**:`changeNet`(换源)与 `closeRollback`(关窗)此前未清,会残留上一次的拦截说明
+- **🟡 清理死变量**:bootVerify helper 里的 `stashRestored` 初始化后从未被读取(R3 真正生效的是 `rollback()` 的无条件 stash),连同其 `stashApplied` 传参一并移除
+- **测试修正**:删掉一条与 309 行同名但更弱的 `windowsHide` 测试;`a restarting done also carries a restart window` 从「全文找字符串」升级为「检查 detached 分支块内四个字段齐全 + 客户端两处调用都传 `evt.restartWindowMs`」;新增 `helper rollback decides stashing by status --porcelain, not diff --quiet` 把本轮 🔴 钉死
+
+### 剩余 🟡 收尾
+
+- **回退被阻止时显示具体原因（C2）**:`conflict`/`tag-health`/`peers` 三种「必须人工介入」的拦截原来是退回浮层 + 一句「打开检查更新面板查看详情」——但那边同样处理不了回退冲突，用户无路可走。现在 `describeRollbackBlocked()` 把冲突文件清单 / 不兼容的插件条目 / 版本健康问题**直接摊开在回退浮层里**,并给出该做什么(commit/stash、换版本、先升级插件)
+- **回滚链中途失败的提示补全（B1）**:`reStashed` 的判定改为先用 `git status --porcelain` 看有没有东西可暂存——`git stash push` 在干净树也返回 exit 0,而它的 "No local changes to save" 走 stderr(host 的 `gitSync` 只收 stdout),靠输出文本判定会误判成「暂存成功」,结尾就会 apply 一条不相干的旧 stash。helper 侧 `run()` 丢弃 stdout,改用 `git diff --quiet` 的退出码判断
+- **修掉自己引入的 `en` 未定义引用**:`describeRollbackBlocked(evt, en)` 里的 `en` 在 `UpdateTrigger` 作用域已不存在(早前删掉了),会抛 ReferenceError 让整个插件从侧栏消失。改为 `lang() === "en"`,并全文件扫描确认无其它游离 `en` 引用
+
+### 复审修复（Hy4 第二轮）
+
+- **R1 (🔴) async 化的 Promise 不再游离**:`runUpdateStreaming` 是 async 但调用点用 `void`，内部抛错会变成 unhandled rejection 并让 `activeRun` 永久 true(之后所有 `/run`、`/restart` 永远 409)。现在路由层 `.catch` 兜底写 `done ok:false` 并 `releaseRunLatch()`;`afterFetch` 被 `runGit` 回调丢弃 Promise 的问题同批修掉(`runAfterFetch`),并在每个 `await` 之后复查 `settled`
+- **R2 (🔴) detached done 不再写死 `autoRestart: true`**:helper 在 `autoRestart:false` 时根本不拉起新进程,写死会让客户端白等 90 秒且看不到错误。现在跟随真实配置,true 时补 `restartInMs`/`pendingBootCheck`/`restartWindowMs`(45 分钟,覆盖 detached 的 install+build),`armRestartWatch` 支持自定义窗口
+- **R3 (🔴) bootVerify 的 rollback 接上了「本地改动已 apply」**:`stashApplied` 经 `scheduleBootVerify` 传进 helper 初始化 `stashRestored`;`rollback()` 改为**无条件**尝试 `stash push -u`(干净树 no-op 且因 `No local changes` 不计入 reStashed);所有早退路径补 `bailOut()` 兜底拉起进程,避免 rollback 杀掉替换进程后留下「没有服务」的死状态
+- **R4 (🔴) `done` 态可从按钮复位**:`closePanel`/`recheck` 只在面板内,而 `trackUpdate` 路径会先 `setOpen(false)`,导致关闭自动重启的用户永久卡在禁用的绿勾上。现在按钮在 `done`/`error` 时点击即回 `idle` 并重查,且 `done` 不再 disable
+- **R5 (🔴) `rollbackProgressOf` 补上取最大 pct**:上一轮只改了 `updateProgressOf`,`Restoring your local changes` 仍会停在 stash 的 28% 而非 restore 的 92%
+- **R6 (🔴) 异步超时的中文映射恢复**:`execFile` 异步超时的 error 是 `code:null + killed:true + signal:SIGTERM`,message 里没有超时字样,原来只匹配 message 的 `/ETIMEDOUT/` 永远不命中。现在 `execFileAsync` 带出 `code/killed/signal`,`lsRemoteTags` 据此判超时
+- **🟡 skipped 不再显示成「更新完成」**:`done.skipped` 走 result 视图显示「已是最新」,不再让按钮变成「完成,请手动重启」
+- **🟡 `handleStatus` 防挂起**:`await checkStatus` 补 try/catch,异常时回明确的 JSON 而不是让请求挂住
+- **🟡 回环判定放开 127/8**:从只认 `127.0.0.1` 放宽到整段 `127.x`,IPv6 侧含 `::ffff:127.x`
+- **测试护栏升级**:新增 `detached done never hardcodes autoRestart`、`a restarting done also carries a restart window`;`windowsHide` 断言从「子串存在」改为「必须 `windowsHide: true`」(显式 false 视为漏设);symlink 用例改为能力探测后 `skip`,Windows 无开发者模式时不再永远红
+
+### 代码审查修复（Hy4 全面 review 后）
+
+- **🔴 `done` 事件补上 `autoRestart`**:服务端从未写过这个字段，客户端 7 处依赖它判断「会不会自动重启」——导致轮询 `/ping`、真实倒计时、重启失败兜底整条防白屏链路都是死代码,成功卡片反而显示「点击重启DSH立即生效」。现在 `build()` 自动重启分支写 `true`、不重启分支写 `false`、后台分离分支写 `true`
+- **🔴 回滚前重新暂存本地改动**:`stash apply` + `drop` 之后用户改动只在工作树,裸 `git checkout <原版本>` 会被 git 拒绝 → 回滚失败、树停在半更新状态,而且提示的手工命令同样失败。现在回滚前 `stash push -u`、回滚后 `apply` 回来(helper 内同样处理)
+- **🔴 `checkStatus` 异步化**:原来是同步 `execFileSync`,直连 8s + 镜像 30s 超时会把整个 host 事件循环堵死约 38 秒——期间所有 agent 轮次、WebSocket 心跳、`/ping` 全停。改为 `execFile` + Promise,`lsRemoteTags` / `remoteLatestTag` / `checkStatus` / `recomputeTarget` 逐层 async
+- **🔴 端口等不到时先回滚**:后台 helper 超时曾直接 `process.exit(1)`,把树留在「已 checkout 新 tag、install/build 一步没跑」的半更新状态。现在先走完整回滚链再退出
+- **🟡 网络来源对 `/run` 生效**:`run` 的 `useCallback` 依赖数组补 `net`,host 端 `checkStatus` 也接收 `options.network`。之前选镜像/代理只对 `/status` 生效,点「开始更新」仍走默认链路
+- **🟡 状态机不再死锁**:`upPhase === "done"` 曾是无法回退的终态且按钮 disabled(非自动重启场景永久卡成禁用绿勾);现在 `closePanel` / `recheck` 会把它收回 `idle`。同时给更新流与回退流加终态标记,服务端中途崩溃导致流「正常结束」时客户端自己收尾报错,不再永远停在进度条
+- **🟡 `safety.js` 补 `windowsHide`**:该文件 `execFileSync` 有 2 处、`windowsHide` 出现 0 次,而它们在默认更新路径上被调用(`revisionHasPath` / `listPackageDirs`)——Windows 上仍会闪 cmd 窗口
+- **🟡 5 处硬编码中文改走 `tr()`**:冲突视图「重新检查」、`aria-label`「关闭」、侧栏「回退版本」、收起态「完成」「重试」在日/英界面下曾是中文
+- **🟡 回滚目标改用原始 commit**:`git describe --abbrev=0` 返回最近的祖先 tag,HEAD 之后若有本地提交,回滚会丢掉它们。现在 `status.localCommit` 优先
+- **🟡 进度推断修正**:只对 `step`/`notice` 事件推进度(原始 pnpm 输出里 `clean-css` 之类包名会命中 `/clean/` 让 install 跳到 64%),且取命中项里 pct 最大者(`Restoring your local changes` 曾永远停在 stash 的 26%)
+- **🟡 latch 与 helper 兜底**:`endRun` 在交接后挂 90 秒兜底 timer 复位 `handingOff`/`restartScheduled`(宿主若拦了 SIGTERM 不退出,latch 会永久卡死);三个 helper 的 `spawn` 补 `.on('error')`;`restartHelperSource` 的 `main()` 补 `.catch`(原来异常连日志都没有)
+- **🟡 安全强度对齐**:`isLoopbackRequest` 补 `socket.remoteAddress` 与代理头判定(原来只查客户端可伪造的 Host 头),`/ping` 补 loopback 校验(它会回带 pid/boot)
+- **测试护栏**:新增两条源码级不变量测试——每个成功 `done` 必须带 `autoRestart`、`lib/**/*.js` 里每个 `spawn`/`execFile` 必须带 `windowsHide`,把这两类「修了但没生效」钉死
+
+- **语言切换真正实时生效**:原来只认 `ctx.locale` 一条路，抓不到就永久停在浏览器语言（用户改设置毫无反应）。现在三级取源（`ctx.locale` → `<html lang>` → 浏览器语言）、`locale` 捕获改为递增间隔重试 12 次、`useLocale()` 额外用 `MutationObserver` 盯 `<html lang>`；同时给 `UpdatePanel` / `BusyDialog` / `AutoCheckRow` / `SourcePicker` 都补上 `useLocale()` 订阅（之前只有外层按钮会重渲染，面板内部停在旧语言）
+- **点击外部自动收起浮层**:新增 `pointerdown` 捕获监听（用 pointerdown 而非 click，DSH 模态会吞掉 click），浮层根元素带 `data-dsh-update-pop` 标记用于判定内外。打开设置/插件面板时小窗不会再赖在屏幕上
+- **兄弟按钮高度不一致时独占一行**:`UpdateTrigger` 用 `ResizeObserver`（parent + 每个兄弟按钮）加 `MutationObserver`（插槽增删）实时测量，兄弟按钮与自己高度差 >4px 时切到 `flex: 0 0 100%` 独占一行，等高时回到 `0 1 auto` 并排。实测 Remote 42px / 我 32px → 各自一行；把 Remote 改 32px → 并排；改回 → 又独占
+- **界面语言改为跟随 DSH 设置,支持中文 / English / 日本語**:新增 185 条三语文案字典与 `tr()` 取词函数,取代原来的 `en ? ... : ...` 硬编码;DSH 语言设为**其它任何语言**(韩法德俄西葡等)时统一回落**英文**,不留中文硬编码给非中文用户
+- **进度步骤表改为按需生成**:原先把 `tr()` 写进模块级常量,会在加载时求值一次,切换语言后进度文案不更新;改为 `updateSteps()` / `rollbackSteps()` 函数,每次推断时按当前语言生成
+- **浮层改用 portal + `position: fixed`**:挂到 `document.body`、坐标由按钮矩形算出,因此不再被侧栏容器的 `overflow` 裁剪——侧栏折叠或只有 ~98px 宽时,浮层仍然是完整可读的 340px,并允许越过侧栏边界(页面滚动/缩放时重新测量以贴住按钮)
+- **按钮宽度改回跟随文案**(98px 左右),与 DS Bot / remote 并排;空间不够时优先压缩自己(`flex: 0 1 auto` + `minWidth: 0` + 文字省略号),再由父级 `flex-wrap` 换行,不会把任何一个按钮挤出可视区(实测 264/200/160/120/96px 五档均无溢出)
+- **按钮不再独占整行**:改回按内容宽度(`flex: 0 1 auto`),侧栏宽时与 DS Bot / remote 并排;空间不够时先压缩自己(`minWidth: 0` + 文字省略号),再由父级 `flex-wrap` 整体换行——不会把自己的按钮或别人的按钮挤出可视区(实测 264/200/160/120/96px 五档均无溢出)
+- **Windows 不再弹控制台窗口**:更新过程中的每条 `git` / `pnpm` 子进程、以及重启与后台更新 helper 现在都带 `windowsHide`,不再为每条命令弹出一个 cmd 窗口(此前标题显示成 `C:\Program Files\Git\cmd\git` 的那些)
+- **自动检查更新**:面板内新增开关 + 间隔(1/6/12/24 小时,默认开启、每 6 小时),偏好存 `localStorage`(每浏览器独立,改设置不需要重启 host 也不会改 profile 配置);**dsh 每次启动都查一次**,之后按间隔轮询(页面被节流时按「距上次是否到期」补查)
+- **静默检查与自动换源**:后台检查按当前网络来源发起,失败后依次尝试所有镜像;全部失败就静默放弃、不打扰用户。只在「拿到 ok 且确实有新版」时留下标记
+- **发现新版的红点提示**:侧栏按钮右上角显示红点,文字从「检查更新」变为「有新版本」,tooltip 给出具体 tag;手动检查或更新成功后自动清除
+- **有更新界面重做**:移除常驻橙色警示区;新增「查看日志 ↗」直开 GitHub Releases 页面(`/releases/tag/<tag>`);「或切换到指定版本」按语义自动换文案——高于当前版本显示「更新到此版本」,低于显示「回退到此版本」(本地做 semver 比较,不额外请求)
+- **回退入口合并**:侧栏独立的「回退版本」按钮移除,回退统一走「或切换到指定版本」;「已是最新」视图同样提供该区块,随时可回退
+- **更新前检测进行中的对话**:`/status` 新增 `busySessions`(统计 `agent.status === 'running'`)。有对话在跑时点更新会先弹提示再确认强制更新——两步都写明「已生成片段会留在会话记录,但未完成的推理与等待结果的工具调用会丢失」;选择强制后 `/run` 带 `force` 并在日志里标注
+- **重启不再白屏**:新增轻量 `/ping` 路由回带 `boot` id(不读 git、不扫 profile)。更新/回退完成且自动重启时,客户端轮询 `/ping`,**等 boot id 变化后再 `location.reload()`**,避免撞上旧进程已退出、新端口未绑定的空窗期(dsh-market 同思路)
+- 修复:完成态绿色被 `onMouseLeave` 覆盖成灰色;「开始更新」按钮把 React 事件误当 status 传入导致直接判失败
+- **网络来源选择器**:浮层顶部常驻「来源」下拉——自动(直连→镜像)/ GitHub 官方(可填本地代理端口,默认 7890)/ 国内镜像(gh-proxy.com、ghproxy.net、ghfast.top,均已实测可达)。检查进行中也能切换,切换后立即按新来源重查;`/status` 与 `/run` 都接受 `source`/`mirror`/`proxyPort`,镜像模式不再先浪费一次直连超时,官方模式不会偷偷回退镜像。代理端口默认**留空=直连**，输入框内不再显示 7890（无占位数字，避免歧义），只有提示文案「留空 = 直连，不走代理」；端口不通时服务端返回可操作提示而不是裸 git 报错。两个浮层统一为「标题 / 网络分段控件 / 分隔线 / 内容」四段式，同宽（`min(340px,100%)`）、同内边距、同圆角。**「回退版本」浮层同样带这个选择器**(读取版本列表与回退执行都走选中的来源),换来源时保留旧版本列表不闪空、换完立即按新来源重查
+- **新增「回退版本」按钮**:与「检查更新」并排(宽度不够自动各占一行)。点击在按钮上方弹出小浮层选目标版本,不再使用全屏遮罩;确认后**按钮自身变成实时进度条**(拉取标签 → 校验 → 暂存 → 切换 → 安装 → 清理 → 构建 → 恢复改动),完成后按服务端 `autoRestart` 自动重启。主面板里的「版本回退」区块已移除
+- **两个浮层互斥**:点「回退版本」会自动收起「检查更新」浮层(并取消未完成的版本检查),反之亦然——同屏永远只有一个窗口;再点同一个按钮则收起。浮层宽度改为 `min(340px, 100%)` / `min(268px, 100%)` 跟随侧栏,窄侧栏不再被裁掉
+- **「检查更新」同构改造**:面板从全屏居中弹窗改为贴在按钮上方的小浮层(宽度跟随侧栏,上限 340px);点「开始更新」后浮层收起、**按钮自身变成实时进度条**(同一套 9 段进度表),完成后绿色对勾 + 自动重启。窄浮层里版本行改为可换行布局,「经镜像 gh-proxy」降级为 title 提示;浮层标题由「更新DSH」改为「检查更新」
+- **侧栏按钮独占一行**:触发按钮现在请求 `flex-basis: 100%`,并在挂载时给真正的 flex 行(`.footerActions`,跳过插槽列表那层 `display: contents` 包装)加 `flex-wrap: wrap`,卸载时还原。这样无论同位置有没有 DS Bot「返回 DS Bot」或 remote 的按钮,它都单独占一行;同位置没有其他插件时这一行就只有它自己
+- **排序改到末尾**:注册 `order` 从 `-100` 改为 `1000`,于是其他插件按钮留在上面一行、本插件排在它们下面一行(而不是插在它们中间)。collapsed 轨态仍是 36px 圆形图标
+- **图标换成实心「下载托盘 + 箭头」**:18 栅格原生绘制、纯填充无描边,18/20px 下在任何 DPR 都不会发糊(旧版 24 栅格缩放到 16px 再叠加 1.5 描边,边缘会糊成灰边)。宽态为「图标 + 文字」的整行按钮(32px 高,hover 高亮整行)
+- **文案**:按钮文字、`title`、`aria-label` 由「更新DSH」改为「检查更新」(面板标题与更新流程不变)
+
+## v1.8.0
 
 本次更新(**手动更新到 alpha 仍然可用,但缺 contextMenus / 残留 lib/ / 插件加载失败不再把 Web UI 留在坏状态**):
 

@@ -1,7 +1,8 @@
 {
   "name": "@zhucy123/dsh-update",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "DSH plugin: sidebar footer update button — compares the local deepseek-harness version with the remote, pulls and reinstalls when a newer version exists, with live progress.",
+  "icon": "icon.svg",
   "keywords": ["dsh", "plugin", "deepseek-harness", "update", "harness", "web"],
   "type": "module",
   "main": "lib/index.js",
@@ -20,7 +21,7 @@
     }
   },
   "peerDependencies": { "react": "^18.2.0" },
-  "files": ["lib/**/*.js", "cordis.patch.yml"],
+  "files": ["lib/**/*.js", "cordis.patch.yml", "icon.svg"],
   "engines": { "node": ">=18" },
   "homepage": "https://github.com/Zhucy123/dsh-update",
   "repository": {

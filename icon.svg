@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="t">
+  <title id="t">dsh-update</title>
+  <!-- 与侧栏「检查更新」按钮同一套图形语言：托盘 + 下落箭头。
+       托盘代表「装进来」，箭头代表「拉到新版本」；圆角方块底色让它在
+       插件列表的 40px 方框里独立成块，不像裸线条那样飘。 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5b9bff"/>
+      <stop offset="1" stop-color="#2a63cf"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <!-- 箭头 -->
+  <path d="M64 30v34" stroke="#fff" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M44 50l20 20 20-20" stroke="#fff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- 托盘 -->
+  <path d="M30 78v10a10 10 0 0 0 10 10h48a10 10 0 0 0 10-10V78" stroke="#fff" stroke-width="10" stroke-linecap="round" fill="none"/>
+</svg>
