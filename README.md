@@ -15,6 +15,17 @@
 
 </div>
 
+<p align="center">
+  <a href="#它解决什么问题"><kbd>　它解决什么问题　</kbd></a>
+  <a href="#长什么样"><kbd>　长什么样　</kbd></a>
+  <a href="#特性"><kbd>　特性　</kbd></a>
+  <a href="#安装"><kbd>　安装　</kbd></a>
+  <a href="#配置"><kbd>　配置　</kbd></a>
+  <a href="#工作机制"><kbd>　工作机制　</kbd></a>
+  <a href="#排障"><kbd>　排障　</kbd></a>
+  <a href="#开发"><kbd>　开发　</kbd></a>
+</p>
+
 ---
 
 ## 它解决什么问题
@@ -32,13 +43,17 @@ git fetch --tags → 找到最新的 dsh-v* → 停掉服务 → git checkout �
 
 ## 长什么样
 
-侧栏底部的按钮，**独占一行**（不会和其他插件的按钮挤在一起）：
+### 侧栏按钮
 
-<img src="docs/images/sidebar-button.png" width="285" alt="侧栏底部的「检查更新」按钮，单独占一行">
+**独占一行**，不会和其他插件的按钮挤在一起：
+
+<p align="left"><img src="docs/images/sidebar-button.png" width="264" alt="侧栏底部的「检查更新」按钮，单独占一行"></p>
+
+### 检查更新浮层
 
 点开后是一个贴着按钮弹出的浮层，不是全屏遮罩——侧栏折叠到 98px 宽时它依然完整可读：
 
-<img src="docs/images/panel-zh.png" width="341" alt="检查更新浮层：网络来源、自动检查、版本对比、切换到其它版本">
+<p align="left"><img src="docs/images/panel-zh.png" width="341" alt="检查更新浮层：网络来源、自动检查、版本对比、切换到其它版本"></p>
 
 <table>
 <tr>
@@ -51,11 +66,11 @@ git fetch --tags → 找到最新的 dsh-v* → 停掉服务 → git checkout �
 </tr>
 </table>
 
-执行更新时浮层消失，**按钮自己变成进度条**：
+### 执行时的进度条
 
-```
-[██████████████░░░░░░░░]  68%   正在安装依赖…
-```
+更新一开始浮层就消失，**按钮自己变成进度条**，右侧是当前阶段和百分比：
+
+<p align="left"><img src="docs/images/button-progress.png" width="264" alt="执行更新时的按钮：变成一条进度条，显示「安装 52%」"></p>
 
 ## 特性
 
