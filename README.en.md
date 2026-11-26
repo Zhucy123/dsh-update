@@ -8,7 +8,7 @@
 
 Upgrade DSH with one click in the sidebar — no more typing out a string of git and pnpm commands.
 
-[![Version](https://img.shields.io/badge/version-2.0.0-4f8cff)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0-4f8cff)](CHANGELOG.en.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4f8cff)](#compatibility)
 [![DSH](https://img.shields.io/badge/DSH-plugin%20%C2%B7%20web-blue)](#installation)
@@ -366,11 +366,11 @@ The repo standardizes on `* text=auto eol=crlf`: stored as LF inside the repo, c
 
 ## Version history
 
-Currently **v2.0.0**. See [CHANGELOG.md](CHANGELOG.md) for the full per-version history.
+Currently **v2.0.0**. See [CHANGELOG.en.md](CHANGELOG.en.md) for the full per-version history.
 
 ## Privacy
 
-**This repo contains no local user data.** The source mentions only the public product name `deepseek-harness` and DSH's default port `3080` — no usernames, absolute working directories, credentials or tokens. The repo contains only `lib/`, `test/`, `docs/`, `package.json`, `cordis.patch.yml`, `icon.svg`, `README.md`, `CHANGELOG.md`, `LICENSE`.
+**This repo contains no local user data.** The source mentions only the public product name `deepseek-harness` and DSH's default port `3080` — no usernames, absolute working directories, credentials or tokens. The repo contains only `lib/`, `test/`, `docs/`, `package.json`, `cordis.patch.yml`, `icon.svg`, `README.md` / `README.en.md` / `README.ja.md`, `CHANGELOG.md` / `CHANGELOG.en.md` / `CHANGELOG.ja.md`, `LICENSE`.
 
 ## License
 

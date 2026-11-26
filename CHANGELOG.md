@@ -1,5 +1,7 @@
 # Changelog
 
+<p align="right"><b>简体中文</b> · <a href="CHANGELOG.en.md">English</a> · <a href="CHANGELOG.ja.md">日本語</a></p>
+
 本插件遵循 [semver](https://semver.org/lang/zh-CN/) 与 DSH 的 `dsh-v*` 版本节奏无关——插件的功能/修复版本独立递增。
 
 > **npm 包名**:`@zhucy123/dsh-update`(2026-09-02 发布时,裸名 `dsh-update` 已被第三方注册为 1.3KB 占位空壳包,故采用 scoped 名;插件 ID 与 `/api/dsh-update/*` 路由前缀仍为 `dsh-update`,下方 v1.2.0 条目中的历史命令仅作说明)。
