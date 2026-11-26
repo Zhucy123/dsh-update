@@ -36,9 +36,9 @@ git fetch --tags → 找到最新的 dsh-v* → 停掉服务 → git checkout �
 
 ### 侧栏按钮
 
-侧栏底部的一行按钮，**位置是自适应的**：兄弟按钮高度和我们差不多就并排，差得多就自己占一行（下例里 Remote 是 42px、我们 32px，高低错落所以分了行）。
+按钮在侧栏底部，**排布是自适应的**：同一行里兄弟按钮高度和我们差不多就并排，差得多就自己占一行。下例中 Remote 是 42px 的圆钮、我们是 32px，高低错落，所以各自占了一行：
 
-<p align="left"><img src="docs/images/sidebar-button.png" width="264" alt="侧栏底部的「检查更新」按钮"></p>
+<p align="left"><img src="docs/images/sidebar-layout.png" width="196" alt="侧栏底部：Remote 与「检查更新」，两者高度不同，各占一行"></p>
 
 ### 检查更新浮层
 
