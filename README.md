@@ -33,7 +33,7 @@ DeepSeek Harness 网页版（web）是用你自己的本地仓库跑的，升级
 
 按钮在侧栏底部。同一行里兄弟按钮高度接近就并排，差得多就自己占一行——下面这张图中 Remote 是 42px、我们是 32px，所以各占一行：
 
-<p align="left"><img src="docs/images/sidebar-layout.png" width="208" alt="侧栏底部：Remote 与「检查更新」，两者高度不同，各占一行"></p>
+<p align="left"><img src="docs/images/sidebar-layout.png" width="220" alt="侧栏底部：Remote 与「检查更新」，两者高度不同，各占一行"></p>
 
 ### 检查更新浮层
 
