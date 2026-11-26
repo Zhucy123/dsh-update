@@ -1,4 +1,4 @@
-# Profile bundle: mount the「⭯ 更新DSH」plugin when a profile lists this bundle.
+# Profile bundle: mount the「检查更新」plugin when a profile lists this bundle.
 # `dsh plugin --profile <name> add dsh-update` appends this bundle to the
 # profile's `dsh.profile.bundles` automatically; no manual cordis.patch.yml
 # editing is needed. The row accepts an optional `config: { repoDir }` override

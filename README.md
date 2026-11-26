@@ -1,237 +1,361 @@
-# dsh-update · ⭯ 更新DSH
+<div align="center">
 
-> One-click update for your local [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) checkout: compare versions → confirm → pull & rebuild → restart, all from a sidebar panel with live progress.
+<img src="icon.svg" width="96" height="96" alt="dsh-update">
 
-![Version](https://img.shields.io/badge/version-1.8.0-4f8cff)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4f8cff)
-![DSH](https://img.shields.io/badge/DSH%20plugin-web-blue)
+# dsh-update
 
-dsh-update 是 DSH Web GUI 的 **Profile Bundle 插件**:在**侧边栏底部(设置按钮上方)**加一个「🔍 检查更新」按钮;它**独占一行**(其他插件如 DS Bot / remote 的按钮排在相邻行),不再和其他插件的按钮挤在同一行。点击后对比本地 checkout 与远程 `dsh-v*` 发布 tags;**发现新版本时不自动动手**,先展示本地/远程版本与本次更新内容,由你点「开始更新」后才执行 `git fetch → checkout → pnpm install → clean → build`,完成后自动(或一键)重启 dsh。插件界面中英双语,跟随 DSH 界面语言实时切换。
+**给本地 DeepSeek Harness 用的更新按钮。**
 
-## 目录
+比版本 → 看更新内容 → 确认 → 拉取重建 → 自动重启，全程在侧栏的一个小浮层里。
 
-- [特性](#特性-features)
-- [界面速览](#界面速览-usage)
-- [工作原理](#工作原理-how-it-works)
-- [兼容性](#兼容性-compatibility)
-- [要求](#要求-requirements)
-- [安装](#安装-installation)
-- [验证与排障](#验证与排障)
-- [配置](#配置-configuration)
-- [API 路由](#api-路由-api)
-- [安全](#安全-security)
-- [开发](#开发-development)
-- [版本历史](#版本历史-changelog)
-- [License](#license)
+[![Version](https://img.shields.io/badge/version-2.0.0-4f8cff)](CHANGELOG.md)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4f8cff)](#兼容性)
+[![DSH](https://img.shields.io/badge/DSH-plugin%20%C2%B7%20web-blue)](#安装)
 
-## 特性 Features
+</div>
 
-- 🆚 **版本对比** — 读取本地 checkout 的 tag / commit,与 origin 的 `dsh-v*` tags 对比(`git ls-remote`,只读)。GitHub 直连超时自动切换 `gh-proxy.com` 镜像;成功结果缓存 60 秒,重复打开秒回。
-- 🛡️ **更新前先确认** — 检测到新版本只展示对比与更新内容,**绝不自动执行**;并醒目提示「更新期间整个页面可能突然变空白」的真实原因(构建阶段会替换网页资源文件),由你点击「开始更新」后才真正动手。
-- ⚡ **一条龙更新** — `git fetch --tags` → **按刚拉到的 tag 重算目标** → 核对必需路径 → 自动暂存本地改动 → `git checkout <tag>` → 删除已消失包残留的 `lib/` → `pnpm install` → `pnpm run clean` → `pnpm run build`,以 `text/event-stream` 流式实时显示每步输出。**Alpha tag 仍然可选**,不会因为带 prerelease 被默认拒绝。
-- 🛡️ **检出前健康检查** — 默认要求目标 tag 里存在 `packages/client/ui-context-menu/package.json`(提供 `contextMenus`)。缺少则拒绝检出,并说明继续会让 Web UI 停在 `Failed to load plugins` / `N entries did not activate`。确需覆盖时在面板点「仍要检出」,或设 `allowMissingRequiredPaths: true`。`requiredPaths: []` 可关掉这道检查。
-- 🧹 **构建前强制 clean + 残留 lib/** — 旧版本 gitignore 的 `lib/` 在包目录被新 tag 删掉后仍会留在磁盘(典型:旧 `ui-context-menu/lib` 继续注入 `contextMenus`)。检出后只删除白名单根目录(`packages/`、`apps/`)下「旧树有、新树没有」的包的 `lib/`;然后 `pnpm run clean`。**clean 失败会中止并回滚**,不再当作警告继续 build。
-- ✅ **构建后核验 + 启动检查** — install 与 build 都成功只是第一步;自动重启打开时,还要等新进程的启动日志在观察窗口内没有插件加载失败。面板在重启前显示「正在检查启动」,结果写在 `dsh-update-apply-*.log`,下次打开面板能看到。
-- 📄 **本次更新内容** — 面板内展示该版本的 GitHub Releases 说明,按 DSH 界面语言显示中/英文段(失败降级为「查看 GitHub Releases →」链接)。
-- 🔄 **自动重启 + 一键重启** — 更新/回退成功约 2 秒后**自动重启 dsh**(由服务端定时器驱动,页面已变白/断线也会发生);也可点「重启DSH / 立即重启」手动触发;重启失败(如自动重启未生效)有明确兜底提示。
-- ↩️ **版本回退** — 更新后悔了?在「已是最新」结果视图下拉选择任一历史 `dsh-v*` tag 回退,流程与更新完全一致(目标 tag 白名单 + `git rev-parse --verify` 核验)。
-- 💾 **本地改动安全** — 更新前自动 `git stash push -u`(含未跟踪文件,修复死循环冲突),成功后原样恢复;新版本改到同一文件时改动安全保存在 stash 不丢失,并明确提示;冲突视图提供「自动暂存并继续」。
-- 🔙 **失败自动回滚** — 已切到新版本后 install / clean / build 失败,或重启后的启动日志出现 `did not activate`、`Failed to load plugins`、HARNESS 插件加载失败,自动 `git checkout` 回原版本并重新 `pnpm install`、`clean`、`build`。**构建退出码 0 还不算成功**;自动重启打开时,要等启动日志在观察窗口内保持干净。
-- ⚠️ **插件 peer 提示** — 更新前扫描 `~/.dsh/profiles/*/package.json`、其直接依赖,以及 `plugins/` 下的 package.json。Harness / dsh 相关 `peerDependencies` 罩不住目标版本时(WorkBuddy 一类钉版本),默认停下来列出冲突,确认后才继续。可改为 `block` 或 `ignore`。Alpha 不会因此从列表里消失。
-- 🔒 **并发保护 & 安全边界** — 同一时间只允许一个更新任务(重复触发返回 409);**4 个 API 路由全部 loopback-only**,仅本机浏览器可触发真实安装;重启路由额外拒绝代理转发。
-- 🌍 **跨平台** — Windows / Linux / macOS;git / pnpm 缺失时快速失败而非挂到超时,POSIX 无 pnpm 自动回退 `corepack pnpm`。
+---
 
-## 界面速览 Usage
+## 它解决什么问题
 
-1. 启动 dsh web,侧边栏底部、设置按钮上方出现「🔍 检查更新」按钮,单独占一行。
-2. 点击打开面板:自动检查并显示 **本地版本 / 远程版本 / 是否可更新**。
-3. 有新版 → 预览「本次更新内容」→ 点「开始更新」,或在「指定版本(含 alpha)」里选一个 tag。构建阶段页面可能突然变空白。
-4. 构建完成后会重启并检查插件是否加载成功。日志里若出现 `Failed to load plugins` / `did not activate`,会自动回到更新前的版本。页面恢复后重新打开面板,可看到上次结果。
-5. 已是最新 → 可用「版本回退」下拉换到任一历史 `dsh-v*` tag(含 alpha),过程与更新相同。
+`dsh web` 跑的是你自己 clone 的 deepseek-harness 仓库。新版本发布时，你要手动做这些事：
 
-## 工作原理 How it works
-
-```mermaid
-flowchart TD
-    A[点击「检查更新」按钮] --> B[GET /api/dsh-update/status]
-    B --> C{发现新版 dsh-v* tag?}
-    C -- 否 --> D[已是最新<br/>提供「版本回退」]
-    C -- 是 --> E[展示 本地 / 远程版本<br/>+ 本次更新内容<br/>「开始更新」按钮]
-    E --> F[git fetch --tags<br/>直连失败 → gh-proxy 镜像]
-    F --> R[按 fetch 结果重算最新 tag<br/>alpha 仍参与比较]
-    R --> P{requiredPaths 都在?}
-    P -- 否 --> Q[默认拒绝检出<br/>可显式覆盖]
-    P -- 是 --> G[git stash push -u<br/>安全暂存本地改动]
-    G --> H[git checkout &lt;tag&gt;]
-    H --> OL[删除已消失包的残留 lib/]
-    OL --> I[pnpm install]
-    I --> J[pnpm run clean<br/>失败则回滚]
-    J --> K[pnpm run build]
-    K --> L{构建成功?}
-    L -- 否 --> M[checkout 回原版本<br/>并重新 install/clean/build]
-    L -- 是 --> N[重启并检查启动日志]
-    N --> O{did not activate /<br/>Failed to load plugins?}
-    O -- 是 --> M
-    O -- 否 --> S[本次更新成功]
+```
+git fetch --tags → 找到最新的 dsh-v* → 停掉服务 → git checkout → pnpm install
+  → pnpm run clean → pnpm run build → 重新起服务 → 发现插件没加载 → 再回滚
 ```
 
-更新目标目录**自动定位**:从 dsh web 进程 `process.cwd()` 向上逐级查找含 `.git` 的目录(`dsh web` 常从子目录如 `apps/cli/src` 启动);可用环境变量或插件 config 覆盖,见[配置](#配置-configuration)。
+这套流程每一步都能出错，而最后一步最伤：**构建退出码是 0 不代表能用**。旧版本遗留的 `lib/` 会让新版本停在 `Failed to load plugins`，这时候人已经关掉终端了。
 
-## 兼容性 Compatibility
+这个插件把整条链路包起来，并且把「出错之后怎么办」当成一等公民：检出前查必需路径、更新前扫描 peer 冲突、构建后观察启动日志、任何一步失败都自动回到你原来的版本、本地未提交的改动全程不丢。
 
-| 平台 | 支持 | 说明 |
-|------|------|------|
-| Windows | ✅ | `pnpm` 经 shell 走 `.cmd` shim;重启以 PowerShell `-WindowStyle Hidden` + `windowsHide` 静默拉起(v1.6.1,`detached: false` 修复 Node.js #51018);更新默认走**进程内**路径,可选启用「后台分离」模式(v1.6.3 引入 / v1.7.0 起默认关闭,见下) |
-| Linux | ✅ | pnpm 直接二进制运行;缺失时回退 `corepack pnpm`(v1.6.0) |
-| macOS | ✅ | 与 Linux 相同;git / pnpm 缺失时快速失败而非挂到超时(v1.6.0) |
+## 长什么样
 
-- 路径统一经 `node:path` 处理,不写死分隔符;git 命令跨平台。
-- 重启机制跨平台:POSIX 用 `detached: true`(Node 内部 `setsid`)让新进程成为独立会话/进程组,脱离控制终端——关闭启动它的终端/窗口不影响服务,输出重定向到 tmpdir 日志文件,全程静默(v1.5.2 / v1.6.0)。
-- systemd(Linux)托管时自动禁用自重启(supervisor 负责拉起);launchd 等未识别场景默认允许自重启。
-- **Windows 后台分离更新(v1.6.3 引入,v1.7.0 起默认关闭)**:Windows 上运行中的 dsh 服务可能占用旧 `node_modules` 文件句柄,进程内 `pnpm install` 删不掉被锁包(报 `[WARN] Failed to remove ...`)会失败并触发自动回滚。为此提供**可选**的「后台分离」模式:设 `config.windowsDetachedUpdate: true` 后,更新在 git 步骤(checkout)完成后自动移交 detached 后台进程——本进程退出释放句柄,后台进程等端口释放后执行 install → stash apply → clean → build,成功后自动重启 dsh、失败则回滚并写日志(`%TEMP%\dsh-update-apply-*.log`)。代价是**页面会在交接时断开**,需稍后刷新。**默认不启用**:进程内路径进度全程可见、不会断开,只有真的撞上文件锁时才有必要开启。
+侧栏底部的按钮，**独占一行**（不会和其他插件的按钮挤在一起）：
 
-## 要求 Requirements
+<img src="docs/images/sidebar-button.png" width="285" alt="侧栏底部的「检查更新」按钮，单独占一行">
 
-- 已 clone 的 **deepseek-harness** checkout(git 仓库,含 `dsh-v*` 发布 tag 的 origin)。
-- 本机可访问 GitHub;不可达时插件自动走 `gh-proxy.com` 镜像(可配置更换,见[配置](#配置-configuration))。
-- Node.js ≥ 18(host 端使用全局 `fetch` / `AbortController`)、git、pnpm(POSIX 无 pnpm 时自动回退 `corepack pnpm`,Node 16.9+ 自带)。
+点开后是一个贴着按钮弹出的浮层，不是全屏遮罩——侧栏折叠到 98px 宽时它依然完整可读：
 
-## 安装 Installation
+<img src="docs/images/panel-zh.png" width="341" alt="检查更新浮层：网络来源、自动检查、版本对比、切换到其它版本">
 
-> 本插件以 **Profile Bundle** 形态分发:`package.json` 声明了 `dsh.bundle`(携带 `cordis.patch.yml` 配置层),所以 `dsh plugin --profile web add` **一条命令装完即自动激活**——无需手动编辑任何配置文件。
+<table>
+<tr>
+<td><img src="docs/images/panel-collapsed.png" width="330" alt="侧栏折叠时浮层仍然完整"></td>
+<td><img src="docs/images/panel-en.png" width="330" alt="English 界面"></td>
+</tr>
+<tr>
+<td align="center"><sub>侧栏折叠到 98px，浮层照常显示</sub></td>
+<td align="center"><sub>English（三语之一）</sub></td>
+</tr>
+</table>
 
-### 方式一:从 npm 安装(推荐)
+执行更新时浮层消失，**按钮自己变成进度条**：
+
+```
+[██████████████░░░░░░░░]  68%   正在安装依赖…
+```
+
+## 特性
+
+### 版本对比
+
+读本地 checkout 的 tag 与 HEAD，跟 origin 的 `dsh-v*` 发布 tag 比对（`git ls-remote`，只读不改仓库）。发现新版本之前**不会自动做任何事**——只告诉你差多少，按钮文字变成「有新版本」并带红点，等你按。
+
+### 三种网络来源
+
+浮层顶部可以直接换链路，选择记在 `localStorage` 里：
+
+| 来源 | 行为 |
+|---|---|
+| **自动**（默认） | 先直连 GitHub，超时（8 秒）后按镜像清单逐个重试，首个成功的记住 |
+| **官方** | 只走 GitHub 直连，可填本地代理端口（Clash / V2Ray 的 7890 之类） |
+| **镜像** | 指定用 `gh-proxy.com` / `ghproxy.net` / `ghfast.top` 之一 |
+
+代理端口**默认留空 = 直连**，不预填 7890——否则没开代理的人一进面板就是红的。执行更新（`/run`）也走你选的这条链路，不只是检查。
+
+### 自动检查
+
+开关 + 间隔，默认开启、**每 6 小时**（可选 1 / 6 / 12 / 24）。每次 `dsh web` 启动额外查一次。后台检查发现新版只改按钮外观（文字 + 红点），不弹窗、不打断你。检查失败静默换镜像，绝不弹错误框。
+
+### 一条龙更新
+
+```
+git fetch --tags
+  ↓ 按刚拉到的 tag 重算目标（避免拿旧列表做决策）
+必需路径检查 → peer 冲突检查
+  ↓
+git stash push -u    （保住你的未提交改动，含未跟踪文件）
+git checkout <tag>
+  ↓ 删除已消失包的残留 lib/
+pnpm install → pnpm run clean → pnpm run build
+  ↓ 全部通过才算完成
+自动重启 → 观察启动日志 → 健康则结束，不健康则回滚
+```
+
+全程以 `text/event-stream` 流式返回，每一步的输出实时显示。
+
+### 四个安全闸门
+
+更新最容易出事的地方不是「拉不下来」，是「拉下来之后不能用」。这四个闸门对应四种真实翻车：
+
+| 闸门 | 拦什么 | 怎么放开 |
+|---|---|---|
+| **必需路径** | 目标 tag 里没有 `packages/client/ui-context-menu/package.json`（提供 `contextMenus`）——检出后 Web UI 会停在 `Failed to load plugins` | 面板上点「仍要检出」，或设 `allowMissingRequiredPaths: true`；`requiredPaths: []` 直接关掉 |
+| **Peer 冲突** | 已装插件的 harness / dsh `peerDependencies` 罩不住目标版本（WorkBuddy 一类钉版本） | 默认列出后由你确认，可改 `block` / `ignore` |
+| **残留 lib/** | 旧版本 gitignore 的 `lib/` 在包目录被新 tag 删掉后仍留在磁盘（典型：旧 `ui-context-menu/lib` 继续注入 `contextMenus`） | 自动处理：只删白名单根目录（`packages/`、`apps/`）下「旧树有、新树没有」的包的 `lib/` |
+| **启动日志** | 构建成功但重启后日志出现 `did not activate` / `Failed to load plugins` | 自动回滚，不需要你干预 |
+
+`pnpm run clean` 失败同样中止并回滚——不再当作警告继续 build。**构建退出码 0 从来不算成功**，要等启动日志在观察窗口（默认 15 秒）内保持干净。
+
+### 版本回退
+
+后悔了就在「切换到其它版本」里选一个历史 `dsh-v*` tag。同一个下拉、同一套流程，按钮文字按版本高低自动变成「更新到此版本」或「回退到此版本」：
+
+```
+高于当前版本 → 更新到此版本
+低于当前版本 → 回退到此版本
+两者都走同一套安全检查
+```
+
+回退被挡住时（本地改动冲突 / 目标版本缺必需路径 / peer 不兼容），浮层会**直接把原因摊开**：冲突的文件清单、不兼容的插件条目、缺哪个路径，并说明该做什么。不会只甩一句「打开检查更新面板查看详情」然后让你无路可走。
+
+### 本地改动不会丢
+
+- 更新前 `git stash push -u`（含未跟踪文件），成功后原样 `stash apply` 回来
+- 新版本改到同一文件导致冲突时，改动**安全留在 stash**，面板明确提示「未丢失，可在仓库目录手动 `git stash apply`」
+- 面板上有「自动暂存并继续更新 / 回退」按钮，不用自己开终端
+- 回滚前会重新 `stash push -u`，避免「回滚把用户改动冲掉」——这条曾经是真 bug
+
+### 失败自动回滚
+
+切换到新版本后，install / clean / build 任一失败，或重启后的启动日志不健康，自动 `git checkout` 回原版本并重新 install / clean / build。回滚过程中 pnpm 再失败时不会假装成功，而是明确告诉你「本地改动安全保存在 git stash 中」——那时树状态不确定，让你手动处理比自动冒险更安全。
+
+### 三语界面
+
+中文 / English / 日本語。语言取源三级：`ctx.locale`（DSH 的 LocaleRuntime）→ `<html lang>` → `navigator.language`，并监听 `<html lang>` 的变化实时切换，不用刷新。其它任何语言（韩法德俄西葡）一律回落**英文**——宁可给英文，也不给半截翻译。
+
+### 并发与安全边界
+
+- 同一时间只允许一个更新任务，重复触发返回 409
+- **5 个 API 路由全部 loopback-only**，LAN / 手机来源一律 403
+- `/restart` 用更严格的校验：拒绝 `x-forwarded-for` 等代理头，Origin 必须与 Host 精确一致
+- 所有 git 调用强制 `GIT_TERMINAL_PROMPT=0`，绝不交互式要凭据
+- 回退目标必须是 `dsh-v*` 前缀，拒绝任意 ref
+
+## 安装
+
+> 本插件是 **Profile Bundle**：`package.json` 声明了 `dsh.bundle` 并携带 `cordis.patch.yml`。所以 `dsh plugin add` **一条命令装完即自动激活**，不用手改任何配置文件。
+
+### 从 npm（推荐）
 
 ```bash
 dsh plugin --profile web add @zhucy123/dsh-update
 dsh web
 ```
 
-> 注:`dsh-update` 这个裸名已被第三方注册为占位空壳包,故以 scoped 名 `@zhucy123/dsh-update` 发布;插件的 ID(侧边栏按钮、cordis 注册名、`/api/dsh-update/*` 路由前缀)仍是 `dsh-update`,安装后无感知差异。
-
-### 方式二:从 GitHub 安装
+### 从 GitHub
 
 ```bash
 dsh plugin --profile web add git+https://github.com/Zhucy123/dsh-update.git
 dsh web
 ```
 
-### 方式三:从本地源码目录安装(开发/测试)
+### 从本地源码（开发用）
 
-`link:` 方式在 node_modules 里创建**符号链接(symlink)**指向你的源码目录,改源码后无需重新安装(host 端代码 `lib/index.js` 在下次启动服务时加载)。把下面的 `<源码目录>` 换成插件源码所在位置的绝对路径。
-
-**Windows (PowerShell):**
-
-```powershell
-# 用 DSH 插件命令安装本地源码(link: 协议,符号链接,改源码即生效)
-dsh plugin --profile web add link:<源码目录>
-dsh web
-```
-
-**Linux / macOS:**
+`link:` 会在 `node_modules` 里建符号链接指向源码目录，改代码不用重装。
 
 ```bash
-dsh plugin --profile web add link:<源码目录>
+dsh plugin --profile web add link:<源码目录绝对路径>
 dsh web
 ```
 
-> npm / git 安装会在 web profile 目录里执行 `pnpm add`,成功后对账插件层:检测到本插件声明 `dsh.bundle`,会自动把它追加进 `dsh.profile.bundles` 并注册进 Cordis loader 树,**一步装完即用**;源码会被**实际拷贝**到 node_modules,改动源码需重新安装(不像 `link:` 是符号链接、改源码即生效)。
+```powershell
+# Windows PowerShell 写法示例
+dsh plugin --profile web add link:C:\Users\me\workspace\dsh-update
+```
 
-装完**完全重启 DSH web**(不是刷新页面,不是另开终端跑 `dsh web`,而要停掉旧进程后重新启动),然后在**侧边栏底部、设置按钮上方**应出现「🔍 检查更新」按钮(独占一行)。
+> **装完必须完全重启 `dsh web`。** 不是刷新页面，不是另开终端再跑一次——要停掉旧进程再启动。
 
-## 验证与排障
+> 插件 ID 与路由前缀都是 `dsh-update`；npm 上的裸名 `dsh-update` 已被第三方注册成 1.3KB 的占位空壳包，所以用 scoped 名发布。装好后看不出区别。
 
-安装并重启后,可以核对以下几点:
+## 配置
 
-1. **依赖已写入**:`~/.dsh/profiles/web/package.json` 的 `dependencies` 里应有 `"@zhucy123/dsh-update"`(方式是 `link:` 或 git/npm)。
-2. **已加入配置层**:`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 列表里应有 `@zhucy123/dsh-update`(`dsh plugin add` 自动写入,无需手动编辑)。
-3. **依赖已就位**:`~/.dsh/profiles/web/node_modules/@zhucy123/dsh-update` 存在——`link:` 方式为指向源码目录的符号链接(Windows 下显示为 `Junction`),git / npm 方式为实际拷贝的目录,均属正常。
-4. **重启后按钮可见**:侧边栏底部设置按钮上方应出现「🔍 检查更新」按钮;点开可看到版本对比面板而非报错。
+全部可选。写在 profile 的 `cordis.patch.yml` 用户补丁层：
 
-### 常见排障
+```yaml
+# ~/.dsh/profiles/web/cordis.patch.yml
+plugins:
+  '@zhucy123/dsh-update':
+    peerConflictPolicy: confirm
+    bootHealthWindowMs: 20000
+```
 
-| 现象 | 原因 / 处理 |
-|------|------------|
-| 已 `dsh plugin add` 并重启,但按钮不出现 | 最常见:装完没有**完全重启**(不是刷新)。停掉旧 `dsh web` 进程再启动。 |
-| 手动按 scoped 改名后按钮消失 / 报「ID 不匹配」 | 插件内部加载标识未与 scoped 包名同步。确认 `cordis.patch.yml` 的 `name:` 与 `lib/client.js` 的 `load({ id })` / `PLUGIN_ID` 均为 `@zhucy123/dsh-update`(v1.6.2 已修复;旧版本或手动改名时需保持一致)。 |
-| 安装时提示「declares no dsh.bundle」 | 装到的版本缺少 bundle 声明(旧版或打包遗漏 `cordis.patch.yml`)。确认版本 ≥ 1.2.0 后重新安装/更新。 |
-| 出现「Failed to load plugins」 | 插件 host 端 `lib/index.js` 启动报错(多为依赖解析问题)。查看启动日志,确认 `node_modules` 依赖已装齐。 |
-| 更新后提示 `client bundles not found` | 更新只做了 `install` 没做 `build`。面板会把 install + build 都成功才算完成;若手动操作务必补 `pnpm run build`。 |
-| 更新后 build 报 `MISSING_EXPORT` / 重启打不开 | 旧版本残留的 `lib/` 构建产物引用了新源码中已不存在的导出(典型:上游删除了某个包)。v1.3.0 起更新流程会在构建前执行 `pnpm run clean`;v1.8.0 起 clean 失败会中止并回滚,并额外删除白名单内已消失包的 `lib/`。若手动操作,执行 `pnpm run clean && pnpm run build`。 |
-| 更新到某个 alpha 后 `Failed to load plugins` / `N entries did not activate`(卡在 `contextMenus`) | 该 tag 没有 `packages/client/ui-context-menu`,磁盘上旧的 gitignore `lib/` 仍在注入 `contextMenus`。v1.8.0 默认拒绝缺少该路径的 tag;若已覆盖检出,启动日志里的上述信号会触发自动回到更新前的版本并重新构建。Alpha 本身仍可从「指定版本」里选择。 |
-| 点更新后列出 WorkBuddy 等插件的 peer 冲突 | 已安装插件把 harness / dsh 包钉在旧版本,罩不住目标 tag(尤其是 alpha)。确认后仍可继续;要改成直接拒绝或只提示,见 `peerConflictPolicy`。 |
-| 更新完成后再看仍显示「有更新」 | 面板只在**打开时 / 点「重新检查」时**刷新状态;更新前就开着的面板(或多标签页)仍停留在旧视图。点「重新检查」即可。v1.3.2 起完成面板还会显示构建后核验结果(✓ 已确认当前版本)。 |
-| 点「更新」提示「已有更新正在执行中」 | v1.3.2 起的并发保护:同一时间只允许一个更新任务。等当前更新完成后再试。 |
-| 打开面板后长时间停在「正在检查版本…」 | 版本对比要访问 GitHub(`git ls-remote`)。v1.3.3 起先直连(8 秒超时),失败自动走 gh-proxy.com 镜像;成功结果缓存 60 秒,重复打开秒回。直连与镜像都失败时显示「检查异常」。 |
+| 字段 | 环境变量 | 说明 | 默认 |
+|---|---|---|---|
+| `repoDir` | `DSH_UPDATE_REPO_DIR` | 要更新的仓库根目录 | 从 `process.cwd()` 向上找第一个含 `.git` 的目录 |
+| `gitProxy` | `DSH_UPDATE_GIT_PROXY` | 直连失败后的镜像前缀；`""` 关闭镜像回退 | `https://gh-proxy.com/` |
+| `allowRestart` | — | 是否允许自重启；检测到 systemd 等 supervisor 时自动禁用 | `true` |
+| `autoRestart` | — | 更新 / 回退成功后是否约 2 秒自动重启 | `true` |
+| `windowsDetachedUpdate` | — | Windows 后台分离更新，见下 | `false` |
+| `requiredPaths` | `DSH_UPDATE_REQUIRED_PATHS` | 检出前必须存在于目标 tag 的相对路径。空数组 = 关闭检查 | `["packages/client/ui-context-menu/package.json"]` |
+| `allowMissingRequiredPaths` | — | `true` 时缺路径只警告、仍检出 | `false` |
+| `orphanLibRoots` | — | 允许清理残留 `lib/` 的仓库一级目录 | `["packages", "apps"]` |
+| `peerConflictPolicy` | — | `confirm`（列出后确认）/ `block`（直接拒绝）/ `ignore`（只记日志） | `confirm` |
+| `profilesDir` | `DSH_UPDATE_PROFILES_DIR` | 扫描插件 peer 的 profile 根目录 | `~/.dsh/profiles` |
+| `bootHealthWindowMs` | — | 端口起来后继续观察启动日志的毫秒数（0–120000）。自动重启关闭时不做这项检查 | `15000` |
 
-## 配置 Configuration
+### Windows 后台分离更新
 
-更新目标目录默认**自动定位**(cwd 向上找 `.git`),可通过环境变量或插件 config 覆盖。插件 config 写在 profile 的 `cordis.patch.yml` 用户补丁层(安装方式一/二/三自动激活,config 为可选增强)。
+Windows 上跑着的 `dsh` 可能占着旧 `node_modules` 的文件句柄，进程内 `pnpm install` 删不掉被锁的包（`[WARN] Failed to remove ...`），然后触发回滚。
 
-| 环境变量 | 插件 config 字段 | 说明 | 默认值 |
-|----------|------------------|------|--------|
-| `DSH_UPDATE_REPO_DIR` | `repoDir` | 要更新的仓库根目录(覆盖自动定位) | cwd 向上查找含 `.git` 的目录 |
-| `DSH_UPDATE_GIT_PROXY` | `gitProxy` | GitHub 镜像前缀,用于直连超时后的回退;空字符串 `""` 关闭镜像回退 | `https://gh-proxy.com/` |
-| — | `allowRestart` | 是否允许自重启;systemd 托管时自动禁用 | `true` |
-| — | `autoRestart` | 更新/回退成功后是否自动重启约 2 秒后 | `true`(受 `allowRestart` 约束) |
-| — | `windowsDetachedUpdate` | Windows 是否启用「后台分离更新」(v1.6.3 引入,**v1.6.4 起默认关闭**):设 `true` 时 git 步骤后移交 detached 进程执行 install/build,本进程退出释放文件锁(页面会断开);默认 `false` 走**进程内更新**——面板全程显示实时进度、不会中途断开,若 `pnpm install` 因文件锁失败会自动回滚到更新前版本 | `false` |
-| `DSH_UPDATE_REQUIRED_PATHS` | `requiredPaths` | 检出前必须存在于目标 tag 的相对路径,逗号分隔(环境变量)或字符串数组(config)。空数组 / 空环境变量表示关闭检查。默认缺 `ui-context-menu` 时拒绝,避免 Web UI 停在 contextMenus | `["packages/client/ui-context-menu/package.json"]` |
-| — | `allowMissingRequiredPaths` | `true` 时缺少 requiredPaths 只警告、仍检出。面板上的「仍要检出」会给单次更新带上同样的开关 | `false` |
-| — | `orphanLibRoots` | 允许删除残留 `lib/` 的仓库一级目录。只删「旧版本有 package.json、新版本没有」的 `<包>/lib`,且路径不得逃出仓库 | `["packages", "apps"]` |
-| — | `peerConflictPolicy` | 已安装插件的 harness/dsh peer 与目标版本不兼容时:`confirm`(默认,列出后需确认)、`block`(直接拒绝)、`ignore`(只在日志里提示并继续) | `confirm` |
-| `DSH_UPDATE_PROFILES_DIR` | `profilesDir` | 扫描插件 peer 的 profile 根目录 | `~/.dsh/profiles` |
-| — | `bootHealthWindowMs` | 端口起来之后继续观察启动日志的毫秒数(0–120000)。窗口内出现 `did not activate`(排除 `0 entries did not activate`)、`Failed to load plugins` 或 HARNESS 插件加载失败则回滚。自动重启关闭时不做这项检查 | `15000` |
-| `DSH_UPDATE_RESTART_SCRIPT` | — | 已废弃(v1.1.0 起 UI 不再使用);host 端 status 仍透传该值,仅为兼容 | — |
+设 `windowsDetachedUpdate: true` 后，更新在 git 步骤完成后移交给一个 detached 后台进程——本进程退出释放句柄，后台进程等端口释放后执行 install → stash apply → clean → build，成功自动重启、失败回滚并写日志到 `%TEMP%\dsh-update-apply-*.log`。
 
-> 插件在**运行时**动态读取仓库目录等本地路径(`process.cwd()` / 环境变量),不会写死进源码。
+**代价是页面会在交接那一刻断开，需要稍后刷新。** 所以默认关闭：进程内路径全程可见、不断线，只有真的撞上文件锁才值得开。
 
-## API 路由 API
+## 工作机制
+
+```mermaid
+flowchart TD
+    A[点「检查更新」] --> B[GET /api/dsh-update/status]
+    B --> C{发现新 dsh-v* tag?}
+    C -- 否 --> D[已是最新<br/>提供「切换到其它版本」]
+    C -- 是 --> E[显示本地 / 远程版本<br/>+ 本次更新内容]
+    E --> F[点「开始更新」]
+    F --> G[git fetch --tags]
+    G --> R[按 fetch 结果重算目标<br/>alpha 仍参与比较]
+    R --> P{requiredPaths 齐全?}
+    P -- 否 --> Q[拒绝检出<br/>可显式覆盖]
+    P -- 是 --> PE{peer 冲突?}
+    PE -- 是 --> PF[列出后等确认]
+    PE -- 否 --> S[git stash push -u]
+    PF --> S
+    S --> H[git checkout tag]
+    H --> OL[清理已消失包的 lib/]
+    OL --> I[pnpm install]
+    I --> J[pnpm run clean]
+    J --> K[pnpm run build]
+    K --> L{全部成功?}
+    L -- 否 --> M[回滚：checkout 原版本<br/>重新 install / clean / build]
+    L -- 是 --> N[自动重启并观察启动日志]
+    N --> O{日志干净?}
+    O -- 否 --> M
+    O -- 是 --> T[恢复 stash<br/>更新完成]
+```
+
+### API 路由
 
 | 路由 | 方法 | 说明 |
-|------|------|------|
-| `/api/dsh-update/status` | GET | 版本对比(本地 tag/commit vs 远程最新 `dsh-v*` tag),并返回本地历史 tag 列表供回退用;loopback-only |
-| `/api/dsh-update/release-notes?tag=` | GET | 指定版本的更新说明(直连 GitHub Releases API,失败走镜像);loopback-only |
-| `/api/dsh-update/run` | POST | 流式执行更新/回退(`text/event-stream` JSON-lines 进度;并发保护 409);loopback-only |
-| `/api/dsh-update/restart` | POST | 一键重启 dsh(detached helper 按原始启动命令拉起新进程);严格 loopback + Origin 校验,拒绝代理转发,supervisor 托管或 `allowRestart: false` 时禁用 |
+|---|---|---|
+| `/api/dsh-update/status` | GET | 版本对比 + 本地历史 tag 列表；`?source=&mirror=&proxyPort=` 可按当前网络来源重查 |
+| `/api/dsh-update/ping` | GET | 极轻量探活，返回 `boot` / `pid` / `inFlight`，重启轮询专用（不读 git、不扫 profile） |
+| `/api/dsh-update/release-notes?tag=` | GET | 指定版本的 GitHub Releases 说明 |
+| `/api/dsh-update/run` | POST | 流式执行更新 / 回退（`text/event-stream`） |
+| `/api/dsh-update/restart` | POST | 按原始启动命令拉起新进程 |
 
-## 安全 Security
+## 兼容性
 
-- **4 个 API 路由全部 loopback-only**(`sec-fetch-site` + Origin 校验),LAN / 手机来源一律 403;`/restart` 额外使用更严格的校验(`trustedRestartRequest`:仅接受本机直连、拒绝 `x-forwarded-for` 等代理头、Origin 必须与 Host 精确一致)。
-- 更新会真实执行 `git checkout` + `pnpm install` + `pnpm run build`,因此只允许本机浏览器触发;所有 git 调用强制 `GIT_TERMINAL_PROMPT=0`(绝不交互式要凭据)。
-- 回退目标必须是 `dsh-v*` 发布 tag(拒绝任意 ref),防异常调用把 checkout 引向任意引用。Alpha tag 属于这个前缀,不会被渠道过滤掉。
-- 残留 `lib/` 只会删白名单根目录下、且经真实路径确认仍在仓库内部的目录;符号链接只解除链接本身。
+| 平台 | 状态 | 说明 |
+|---|---|---|
+| Windows | ✅ | `pnpm` 经 shell 走 `.cmd` shim；重启用 PowerShell `-WindowStyle Hidden` + `windowsHide` 静默拉起 |
+| Linux | ✅ | 无 pnpm 时自动回退 `corepack pnpm` |
+| macOS | ✅ | 同 Linux |
 
-### 隐私 / 开源安全
+- 路径统一经 `node:path`，不写死分隔符
+- POSIX 重启用 `detached: true` 让新进程成为独立会话，关掉启动它的终端不影响服务，输出重定向到 tmpdir 日志
+- systemd 托管时自动禁用自重启（由 supervisor 负责拉起）；launchd 等未识别场景默认允许
 
-**本仓库不包含任何用户本地数据。** 源码中仅引用公开的产品名 `deepseek-harness` 与 DSH 默认端口 `3080`;不出现用户名、绝对工作目录、凭证、token 等。仓库只含 `lib/`、`package.json`、`cordis.patch.yml`、`README.md`、`CHANGELOG.md`、`LICENSE`,无 `node_modules`、`.git`、日志、环境变量或凭据文件,可安全开源。
+**要求**：已 clone 的 deepseek-harness checkout（含 `dsh-v*` tag 的 origin）、Node.js ≥ 18、git、pnpm。
 
-## 开发 Development
+## 排障
+
+| 现象 | 处理 |
+|---|---|
+| 装完按钮不出现 | 99% 是没**完全重启**（只是刷新了页面）。停掉旧 `dsh web` 进程再启动 |
+| 面板一直停在「正在检查版本…」 | 网络问题。换到「镜像」来源再试；检查失败会在提示里给出直连与镜像各自的错误 |
+| 提示「已有更新正在执行中」(409) | 并发保护，等当前任务结束 |
+| 提示缺少必需路径 | 目标 tag 会损坏 Web UI（典型缺 `ui-context-menu`）。换一个版本，或确认风险后点「仍要检出」 |
+| 列出 WorkBuddy 等插件的 peer 冲突 | 已装插件把 harness / dsh 包钉在旧版本。确认后仍可继续，或改 `peerConflictPolicy` |
+| 更新后 `MISSING_EXPORT` / 打不开 | 旧残留 `lib/` 引用了已删除的导出。插件会自动 `pnpm run clean` 并清理已消失包的 `lib/`；手动操作时记得 `pnpm run clean && pnpm run build` |
+| 启动日志出现 `Failed to load plugins` / `did not activate` | 插件已经自动回滚了，页面恢复后重开面板能看到回滚结果 |
+| 更新完仍显示「有更新」 | 面板只在打开时 / 点「重新检查」时刷新。多标签页或开着的旧面板会停在旧视图 |
+| 按钮一直是个绿勾、点不动 | v1.9.0 起修掉了：`done` / `error` 态点击即回 `idle` 并重查 |
+
+### 验证安装
+
+```powershell
+# 1. 依赖已写入
+Get-Content $HOME\.dsh\profiles\web\package.json | Select-String dsh-update
+
+# 2. 依赖已就位（link: 方式是 Junction）
+Get-Item $HOME\.dsh\profiles\web\node_modules\@zhucy123\dsh-update
+```
+
+然后重启 `dsh web`，侧栏底部应出现「检查更新」按钮。
+
+## 开发
 
 ```bash
 git clone https://github.com/Zhucy123/dsh-update.git
 cd dsh-update
-
-# 安装依赖(如有)
-pnpm install
-
-# 安全闸门的单元测试(tag 比较、peer、requiredPaths、残留 lib/、启动日志)
 node --test test/*.test.mjs
-
-# 本地 DSH 中通过符号链接安装(自动激活)
 dsh plugin --profile web add link:$(pwd)
 ```
 
-- `lib/index.js` — host 端(Node):API 路由、更新/回退执行管线、stash / 冲突处理、requiredPaths、残留 lib/、启动健康检查与自动回滚。
-- `lib/safety.js` — 可单测的比较、semver/peer、路径白名单、启动日志判定。
-- `lib/client.js` — 浏览器端(classic script,零构建):侧边栏按钮 + 更新面板 + i18n。
-- `test/update-safety.test.mjs` — `node --test` 覆盖上述闸门。手动再确认时:选一个缺少 `packages/client/ui-context-menu/package.json` 的 tag,面板应拒绝检出;选一个仍包含该路径的 alpha,应允许继续。
-- `package.json` — 声明 `dsh.bundle`(携带 `cordis.patch.yml`),`dsh plugin add` 一步激活。
-- 改 host 端需**重启 dsh web** 生效;改客户端改源码即生效(`link:` 安装),硬刷新页面即可。
+```
+lib/index.js                2328 行  host 端：API 路由、更新/回退管线、stash、启动健康检查
+lib/client.js               2250 行  浏览器端：侧栏按钮、浮层、i18n（classic script，无构建）
+lib/safety.js                592 行  纯函数：tag 比较、peer 冲突、路径白名单、环境清理
+test/update-safety.test.mjs  477 行  20 条测试
+icon.svg                      18 行  插件图标（128 网格）
+```
 
-## 版本历史 Changelog
+```bash
+node --test test/*.test.mjs
+# ℹ tests 20 · pass 19 · fail 0 · skip 1
+```
 
-最新版本 **v1.8.0**(**更新安全闸门**:alpha 仍可手动选择;检出前检查 `contextMenus` 等必需路径,检出后清掉已消失包的残留 `lib/`,`pnpm run clean` 失败即回滚;重启后若日志出现 `Failed to load plugins` / `did not activate` 会自动回到上一版本并重新构建。fetch 之后按最新 tag 重算目标。插件 peer 冲突默认需确认)。完整逐版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+唯一 skip 的是需要创建符号链接的用例——Windows 没开开发者模式时 `symlinkSync` 抛 EPERM，已改成能力探测后 skip，不是坏掉。
+
+20 条里有 6 条是**运行时行为测试**（真的起 git 子进程、真的跑一次注定失败的回滚），不是源码正则：
+
+```
+runUpdateStreaming resolves and closes the stream on a non-git directory
+buildDoneEvent keeps autoRestart honest for both modes
+createProcessRunners streams a real git command and reports its exit code
+performRollback reports failure instead of throwing when it cannot restore
+sanitizeGitEnv strips every malformed GIT_CONFIG_* shape git rejects
+a git call survives a poisoned GIT_CONFIG_* environment
+```
+
+### 几条硬约束（改代码前必读）
+
+1. **`lib/client.js` 没有构建步骤**——是 classic script，靠 `window.__ModuleLoader__.load({ id, factory })` 注册，内部 `require("react")` 拿平台模块。不能改成 ESM/TS、不能裸 import、不能加打包工具。
+2. **`lib/client.js` 是 CRLF + tab 缩进**，含约 185 条 `tr("中文原文")` 字典项。改它必须用精确匹配（含 `\r\n`）。
+3. **React 只用 `useState / useEffect / useRef / useCallback` + `createElement`（别名 `h`）**，无 JSX。
+4. **host 端路由都是 loopback-only**，这是刻意的安全边界，别为了「方便测试」放开。
+
+### 两类改动，两种生效方式
+
+| 改了 | 怎么生效 |
+|---|---|
+| `lib/client.js` | 硬刷新页面即生效（`link:` 安装） |
+| `lib/index.js` / `lib/safety.js` / `package.json` | 必须重启 `dsh web` |
+
+### 行尾与 `.gitattributes`
+
+仓库统一 `* text=auto eol=crlf`：仓库内以 LF 存储，工作树检出 CRLF。这覆盖了系统级 `core.autocrlf=true`，避免提交时反复出现 `LF will be replaced by CRLF`。
+
+> 如果你遇到「加了 `.gitattributes` 警告还在」，先看 `git ls-files --eol` 里有没有 `-text`——多半是某个文件藏着游离的裸 CR（`\r` 后面不是 `\n`），git 会把它判成 binary，属性对二进制文件不生效。
+
+## 版本历史
+
+当前 **v2.0.0**。完整逐版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 隐私
+
+**本仓库不包含任何用户本地数据。** 源码里只出现公开产品名 `deepseek-harness` 与 DSH 默认端口 `3080`，没有用户名、绝对工作目录、凭证或 token。仓库只含 `lib/`、`test/`、`docs/`、`package.json`、`cordis.patch.yml`、`icon.svg`、`README.md`、`CHANGELOG.md`、`LICENSE`。
 
 ## License
 
