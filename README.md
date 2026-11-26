@@ -15,16 +15,7 @@
 
 </div>
 
-<p align="center">
-  <a href="#它解决什么问题"><kbd>　它解决什么问题　</kbd></a>
-  <a href="#长什么样"><kbd>　长什么样　</kbd></a>
-  <a href="#特性"><kbd>　特性　</kbd></a>
-  <a href="#安装"><kbd>　安装　</kbd></a>
-  <a href="#配置"><kbd>　配置　</kbd></a>
-  <a href="#工作机制"><kbd>　工作机制　</kbd></a>
-  <a href="#排障"><kbd>　排障　</kbd></a>
-  <a href="#开发"><kbd>　开发　</kbd></a>
-</p>
+**目录** · [它解决什么问题](#它解决什么问题) · [长什么样](#长什么样) · [特性](#特性) · [安装](#安装) · [配置](#配置) · [工作机制](#工作机制) · [兼容性](#兼容性) · [排障](#排障) · [开发](#开发)
 
 ---
 
@@ -45,9 +36,9 @@ git fetch --tags → 找到最新的 dsh-v* → 停掉服务 → git checkout �
 
 ### 侧栏按钮
 
-**独占一行**，不会和其他插件的按钮挤在一起：
+侧栏底部的一行按钮，**位置是自适应的**：兄弟按钮高度和我们差不多就并排，差得多就自己占一行（下例里 Remote 是 42px、我们 32px，高低错落所以分了行）。
 
-<p align="left"><img src="docs/images/sidebar-button.png" width="264" alt="侧栏底部的「检查更新」按钮，单独占一行"></p>
+<p align="left"><img src="docs/images/sidebar-button.png" width="264" alt="侧栏底部的「检查更新」按钮"></p>
 
 ### 检查更新浮层
 
@@ -68,9 +59,9 @@ git fetch --tags → 找到最新的 dsh-v* → 停掉服务 → git checkout �
 
 ### 执行时的进度条
 
-更新一开始浮层就消失，**按钮自己变成进度条**，右侧是当前阶段和百分比：
+更新一开始浮层就消失，**按钮自己变成进度条**——填充宽度就是百分比，文字显示当前阶段和进度：
 
-<p align="left"><img src="docs/images/button-progress.png" width="264" alt="执行更新时的按钮：变成一条进度条，显示「安装 52%」"></p>
+<p align="left"><img src="docs/images/button-progress.png" width="100" alt="执行更新时的按钮：填充条覆盖 52%，显示「安装 52%」"></p>
 
 ## 特性
 
