@@ -278,10 +278,10 @@ test('detached helper sources are valid JavaScript', () => {
 })
 // ---- 回归护栏：这两条曾经「修好了但没生效」，用测试钉死 ----
 
-// done 的字段契约已由 buildDoneEvent 运行时测试覆盖（见文件末尾），
-// 这里只保留一条「不能再出现裸 done 字面量」的结构性护栏。
-test('successful done events are only produced by buildDoneEvent', () => {
-  const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+// done 的字段契约已由 buildDoneEvent 运行时测试覆盖（见文件末尾），
+// 这里只保留一条「不能再出现裸 done 字面量」的结构性护栏。
+test('successful done events are only produced by buildDoneEvent', () => {
+  const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
   // 逐行看：含 type:'done' 且 ok:true 的行，排除 skipped（无需更新不是一次更新）。
   const rows = source.split(/\r?\n/).filter((line) => /type:\s*'done'/.test(line) && /ok:\s*true/.test(line))
   const real = rows.filter((line) => !/skipped/.test(line))

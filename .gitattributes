@@ -1,0 +1,18 @@
+# 统一行尾策略。
+# 仓库内一律以 LF 存储；工作树检出为 CRLF（本插件主要在 Windows 上开发调试，
+# lib/client.js 的既有约定也是 CRLF + tab 缩进）。
+# 这里显式声明 eol=crlf，优先级高于系统级 core.autocrlf=true，
+# 从而消除提交时反复出现的 "LF will be replaced by CRLF" 提示。
+* text=auto eol=crlf
+
+# 二进制文件，不做任何行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.gz binary
