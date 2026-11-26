@@ -6,7 +6,7 @@
 
 **DeepSeek Harness 网页版（web）的更新插件。**
 
-给**源码安装**的 DSH web 用：在侧栏点一下就能升级，不用再手敲一串 git 和 pnpm 命令。
+在侧栏点一下就能升级 DSH，不用再手敲一串 git 和 pnpm 命令。
 
 [![Version](https://img.shields.io/badge/version-2.0.0-4f8cff)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -21,16 +21,9 @@
 
 ## 它解决什么问题
 
-DeepSeek Harness 网页版（web）有两种跑法：
-
-- **从源码 clone 跑**（`git clone` 后 `node --import tsx/esm apps/cli/src/bin.ts web`）
-- **用 npm 装**（`npm i -g @deepseek-ai/dsh` 或 `npx`，跑打包好的产物）
-
-**这个插件针对第一种。** 源码 clone 的升级要手动敲一长串命令——拉 tag、停服务、checkout、install、clean、build、再起服务，中间每一步都可能出错。
+从源码跑起来的 DSH web，升级一次要手动敲一长串命令——拉 tag、停服务、checkout、install、clean、build、再起服务，中间每一步都可能出错，最后还要自己起回来。
 
 装了插件之后，侧栏底部多一个「检查更新」按钮：检查有没有新版本，你点了才开始更新，构建完自动重启、页面自己回来，出错就退回原来的版本。要你操心的只有**确认**这一件事，其余（拉取、暂存本地改动、重建、回滚）都由它处理。
-
-> **用 npm 装的不用这个插件。** 那种安装没有 git 仓库，版本跟着 npm 包走，`npm i -g @deepseek-ai/dsh@latest` 就是升级，插件读不到 tag 也做不了回滚——面板会直接报「不是 git 仓库」。
 
 ## 长什么样
 
@@ -284,17 +277,13 @@ flowchart TD
 
 **要求**：
 
-- DSH 以**源码方式**运行——即一个 clone 下来的 deepseek-harness 仓库（含 `dsh-v*` tag 的 origin）
+- DSH 以源码方式运行——一个 clone 下来的 deepseek-harness 仓库，origin 上带 `dsh-v*` 发布 tag
 - Node.js ≥ 18、git、pnpm
-
-用 `npm i -g @deepseek-ai/dsh` 装的**不需要这个插件**：那种安装没有 git 仓库，升级就是 `npm i -g @deepseek-ai/dsh@latest`。插件在这种情况下会在面板里报「不是 git 仓库」（`not a git checkout`）。
 
 ## 排障
 
 | 现象 | 处理 |
 |---|---|
-| 面板报「不是 git 仓库」/ `not a git checkout` | DSH 是用 npm 装的，没有 git 仓库，这个插件管不了这种情况。升级用 `npm i -g @deepseek-ai/dsh@latest`，或改用源码 clone 安装 |
-| npm 安装，但面板找一个不相干的仓库 | `repoDir` 默认从 `process.cwd()` 向上找第一个 `.git`——如果启动目录恰好在别的 git 项目里，会认错目标。用 `DSH_UPDATE_REPO_DIR` 或 config 的 `repoDir` 明确指定，或干脆不用这个插件 |
 | 装完按钮不出现 | 99% 是没**完全重启**（只是刷新了页面）。停掉旧 `dsh web` 进程再启动 |
 | 面板一直停在「正在检查版本…」 | 网络问题。换到「镜像」来源再试；检查失败会在提示里给出直连与镜像各自的错误 |
 | 提示「已有更新正在执行中」(409) | 并发保护，等当前任务结束 |
