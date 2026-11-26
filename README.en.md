@@ -33,7 +33,7 @@ Install the plugin and the bottom of the sidebar gains a "Check for updates" but
 
 The button sits at the bottom of the sidebar and **sizes itself to its label** instead of stretching across the row. Sibling buttons on the same row sit side by side when their heights are close and each takes its own row when they differ a lot — in the screenshot below Remote is 42px and ours is 32px, so each gets its own row:
 
-<p align="left"><img src="docs/images/sidebar-layout.png" width="246" alt="Bottom of the sidebar: Remote and Check for updates, at different heights, each on its own row"></p>
+<p align="left"><img src="docs/images/sidebar-layout-en.png" width="336" alt="Bottom of the sidebar: Remote and Check for updates, at different heights, each on its own row"></p>
 
 ### The check-for-updates popover
 
@@ -41,12 +41,12 @@ Clicking opens a popover anchored to the button, not a full-screen overlay. It i
 
 <table>
 <tr>
-<td><img src="docs/images/panel-zh.png" width="300" alt="Check for updates popover: network source, automatic checks, version comparison, switch to another version"></td>
-<td><img src="docs/images/panel-en.png" width="300" alt="English UI"></td>
+<td><img src="docs/images/panel-en.png" width="300" alt="Check for updates popover: network source, automatic checks, version comparison, switch to another version"></td>
+<td><img src="docs/images/panel-ja.png" width="300" alt="Japanese UI"></td>
 </tr>
 <tr>
-<td align="center"><sub>Chinese</sub></td>
 <td align="center"><sub>English</sub></td>
+<td align="center"><sub>Japanese</sub></td>
 </tr>
 </table>
 
@@ -54,7 +54,7 @@ Clicking opens a popover anchored to the button, not a full-screen overlay. It i
 
 Once the update starts the popover collapses and the button itself becomes a progress bar. The light track behind it is the trough; the darker part is the share completed:
 
-<p align="left"><img src="docs/images/button-progress.png" width="100" alt="Button during an update: the left half filled to 52%, label reads Install 52%"></p>
+<p align="left"><img src="docs/images/button-progress-en.png" width="113" alt="Button during an update: the left half filled to 52%, label reads Install 52%"></p>
 
 ## Features
 

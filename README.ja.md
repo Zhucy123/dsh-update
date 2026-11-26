@@ -33,7 +33,7 @@
 
 ボタンはサイドバーの下部にあり、**幅は文字の長さに合わせて決まり**、行いっぱいには広がりません。同じ行の兄弟ボタンは高さが近ければ横に並び、差が大きければそれぞれ 1 行を占めます。下の図では Remote が 42px、このプラグインが 32px なので、それぞれ別の行になっています。
 
-<p align="left"><img src="docs/images/sidebar-layout.png" width="246" alt="サイドバー下部：Remote と「アップデートを確認」は高さが違うため、それぞれ 1 行を占めている"></p>
+<p align="left"><img src="docs/images/sidebar-layout-ja.png" width="258" alt="サイドバー下部：Remote と「アップデートを確認」は高さが違うため、それぞれ 1 行を占めている"></p>
 
 ### アップデート確認パネル
 
@@ -41,11 +41,11 @@
 
 <table>
 <tr>
-<td><img src="docs/images/panel-zh.png" width="300" alt="アップデート確認パネル：ネットワーク経路、自動チェック、バージョン比較、他のバージョンへの切り替え"></td>
+<td><img src="docs/images/panel-ja.png" width="300" alt="アップデート確認パネル：ネットワーク経路、自動チェック、バージョン比較、他のバージョンへの切り替え"></td>
 <td><img src="docs/images/panel-en.png" width="300" alt="英語 UI"></td>
 </tr>
 <tr>
-<td align="center"><sub>中文</sub></td>
+<td align="center"><sub>日本語</sub></td>
 <td align="center"><sub>English</sub></td>
 </tr>
 </table>
@@ -54,7 +54,7 @@
 
 更新を開始するとパネルは畳まれ、ボタン自体がプログレスバーになります。ボタンの背面にある淡いトラックが溝で、濃い部分が完了した割合を表します。
 
-<p align="left"><img src="docs/images/button-progress.png" width="100" alt="更新実行中のボタン：左半分が 52% まで塗られ、ラベルは「インストール 52%」"></p>
+<p align="left"><img src="docs/images/button-progress-ja.png" width="155" alt="更新実行中のボタン：左半分が 52% まで塗られ、ラベルは「インストール 52%」"></p>
 
 ## 機能
 

@@ -33,7 +33,7 @@
 
 按钮在侧栏底部，**宽度跟着文字走**，不撑满整行。同一行里兄弟按钮高度接近就并排，差得多就自己占一行——下面这张图中 Remote 是 42px、我们是 32px，所以各占一行：
 
-<p align="left"><img src="docs/images/sidebar-layout.png" width="246" alt="侧栏底部：Remote 与「检查更新」，两者高度不同，各占一行"></p>
+<p align="left"><img src="docs/images/sidebar-layout-zh.png" width="246" alt="侧栏底部：Remote 与「检查更新」，两者高度不同，各占一行"></p>
 
 ### 检查更新浮层
 
@@ -54,7 +54,7 @@
 
 开始更新后浮层收起，按钮本身变成进度条。按钮上一层浅色轨道是底槽，深一点的部分是已完成的比例：
 
-<p align="left"><img src="docs/images/button-progress.png" width="100" alt="执行更新时的按钮：左半边填充到 52%，文字显示「安装 52%」"></p>
+<p align="left"><img src="docs/images/button-progress-zh.png" width="100" alt="执行更新时的按钮：左半边填充到 52%，文字显示「安装 52%」"></p>
 
 ## 特性
 
