@@ -50,17 +50,21 @@ Clicking opens a popover anchored to the button, not a full-screen overlay. It i
 </tr>
 </table>
 
-### Progress bar while updating
+### Progress while updating
 
-Once the update starts the popover collapses and the button itself becomes a progress bar. The light track behind it is the trough; the darker part is the share completed:
+Starting an update no longer closes the window — it turns into the progress window in place, with a ✕ in the top right to hide it. Hiding it does not stop the run, and clicking the sidebar button brings it back.
 
-<p align="left"><img src="docs/images/button-progress-en.png" width="113" alt="Button during an update: the left half filled to 52%, label reads Install 52%"></p>
+Inside is a band that sweeps from left to right and repeats. The server reports stages, never a total duration, so no percentage is shown: movement alone tells you it is still working.
+
+The sidebar button switches to progressive wording (Installing, Building…) and animates the same band. On completion it turns green and reads "Update complete" or "Rollback complete".
+
+<p align="left"><img src="docs/images/button-progress-en.png" width="113" alt="Button during an update: a blue band sweeping, label reads Building"></p>
 
 ## Features
 
 ### Version comparison
 
-Reads the `dsh-v*` release tags on origin with `git ls-remote` and compares them with the local repo. It is read-only throughout and never modifies the repo. Finding a new version starts nothing: it just turns the button into "Update available" and adds a red dot, then waits for your click.
+Reads the `dsh-v*` release tags on origin with `git ls-remote` and compares them with the local repo. It is read-only throughout and never modifies the repo. Finding a new version starts nothing: it just turns the button into "Update available" and adds a red dot **after** the label (a separate flex item, so it never covers the last glyph), then waits for your click.
 
 ### Three network sources
 
@@ -100,9 +104,13 @@ Every step is streamed as `text/event-stream`, so the output of each step shows 
 
 After a successful build, dsh restarts automatically (the completion notice shows a real countdown, about 2 seconds) — no manual page refresh and no watching a terminal:
 
-The plugin first records the `boot` id of the current process, then requests `/api/dsh-update/ping` once every 1.5 seconds. When `boot` changes, the new process has bound the port, and only then does it call `location.reload()`.
+The plugin first records the `boot` id of the current process, then requests `/api/dsh-update/ping` every 0.6 seconds (the first call is 250 ms after the run ends). When `boot` changes, the new process has bound the port, and only then does it call `location.reload()`. The same `boot` baseline is written to browser `localStorage`, so even if the build replaces the web assets, blanks the page and severs the SSE, a freshly loaded page still polls `/ping` on its own and completes the reload without depending on that stream.
+
+Before reloading it checks one more thing: whether this page needs it at all. The first half of `boot` is the host process start time, so if that predates this page load, the new process was already serving this page — the marker is cleared and no reload happens. That is why pressing F5 yourself is not followed by a second automatic reload.
 
 Why not just reload: between the old process exiting and the new one listening there is a gap, and reloading right away only lands you on "This site can't be reached". Waiting until the new process is confirmed ready means the page drops straight back into a working UI.
+
+In practice the window where the page is truly unusable is much shorter than it feels. Sampling a real update every 2 seconds showed `dist` empty for only **about 2 seconds**, and the restart gap (the new process has not bound its port yet) at **about 18 seconds**. During the several minutes of host `tsc` compilation before that, `dist` stays intact and the page remains fully usable — that stretch does not produce a blank page.
 
 - Polling runs for 90 seconds by default; detached background mode hands out a longer window
 - Once the window is over it stops waiting and gives control back to you, rather than locking you into a loop
@@ -290,7 +298,7 @@ flowchart TD
 | `Failed to load plugins` / `did not activate` in the startup log | The plugin has already rolled back; reopen the panel once the page recovers to see the rollback result |
 | It still says "update available" after updating | A successful update refreshes the page automatically, and this doesn't happen after that refresh. A separate tab, or a panel opened before the refresh, stays on the old view — click "Check again" |
 | The button stays a green check and won't respond | Fixed in v1.9.0: a click in the `done` / `error` state returns it to `idle` and re-checks |
-| The page didn't come back after updating | It means the automatic restart didn't take effect. The panel shows "Restart failed, please restart manually" — click "Restart now" beside it, or press F5 and start dsh yourself. Polling waits 90 seconds by default, then hands control back to you |
+| The page didn't come back after updating | Wait a few seconds first: even if the build blanks the page and severs the SSE, the reloaded page still polls `/ping` (about twice a second) from the `localStorage` boot baseline. If the restart genuinely did not happen, the panel shows "Restart failed, please restart manually" — click "Restart now" beside it, or press F5 and start dsh yourself. Polling waits 90 seconds by default, then hands control back to you |
 
 ### Verifying the install
 

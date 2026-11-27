@@ -698,14 +698,15 @@ test('rollback keeps its explicit target tag instead of recomputing to the lates
 
 test('client progress popover is minimal: no header, source picker or yellow warning', () => {
   const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
-  // Starting any task closes the panel so the button itself shows progress.
-  assert.ok(/setUpHint\(targetTag \? tr\("准备回退"\)[\s\S]{0,120}setOpen\(false\);/.test(client),
-    'starting a task must close the panel, including rollback')
-  // While updating, the panel hides its title/close/source/auto-check rows.
+  // Starting a task no longer closes the panel: it turns into the progress window
+  // in place, header and close button included, so the user can keep watching and
+  // can still hide the window without interrupting the run.
+  assert.ok(/setUpHint\(targetTag \? tr\("准备回退"\)[\s\S]{0,400}setOpen\(true\);/.test(client),
+    'starting a task must keep the panel open as the progress window')
   assert.ok(client.includes('const inProgress = view.kind === "updating"'),
-    'an in-progress view must be detected to render a minimal popover')
-  assert.ok(/inProgress \? null : h\("div", \{ style: headStyle \}/.test(client),
-    'the progress popover must hide its header')
+    'an in-progress view must still be detected to hide the unrelated controls')
+  assert.ok(!/inProgress \? null : h\("div", \{ style: headStyle \}/.test(client),
+    'the progress popover must keep its header so the close button stays reachable')
   assert.ok(/inProgress \? null : sourceRow/.test(client),
     'the progress popover must hide the source picker')
   assert.ok(/inProgress \? null : autoRow/.test(client),
@@ -773,8 +774,8 @@ test('auto-refresh uses a localStorage boot marker, independent of the SSE strea
     'a dedicated persisted key must exist')
   assert.ok(client.includes('function watchPendingReload()'),
     'a loader that checks the marker on page load must exist')
-  assert.ok(/boot !== lastBoot[\s\S]{0,120}window\.location\.reload\(\)/.test(client),
-    'the watcher must reload once the boot id changes')
+  assert.ok(/boot !== lastBoot[\s\S]{0,900}window\.location\.reload\(\)/.test(client),
+    'the watcher must reload once the boot id changes (after the staleness check)')
   assert.ok(client.includes('watchPendingReload();'),
     'the watcher must be started from apply() on page load')
   // The marker is written when a run starts and cleared on non-restart outcomes.
@@ -825,4 +826,162 @@ test('interception wording, cancel reset and resume progress behave correctly', 
   // Conflict details are shown once, in a collapsed block (no duplicate list).
   assert.ok(client.includes('tr("查看冲突详情")'),
     'conflict details must be collapsed behind a summary')
+})
+
+test('a page loaded onto the new boot does not reload a second time', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // Reported symptom: after a rollback the page went blank, the user refreshed
+  // manually because the automatic reload felt too slow, and then it reloaded
+  // once more on its own. The second reload came from the persisted marker: the
+  // freshly loaded page saw a boot id different from the one recorded before the
+  // restart and treated that as "the new process just took over".
+  assert.ok(/let observed = false/.test(client),
+    'the watcher must track whether it has already seen a boot id in this page')
+  assert.ok(/function bootStartedAt\(boot\)/.test(client),
+    'the boot id carries the host start time, which decides staleness precisely')
+  assert.ok(/const stale = processStartedAt !== null && pageLoadedAt > 0[\s\S]{0,120}: observed;/.test(client),
+    'a page whose load postdates the new process must not reload: it already runs it')
+  assert.ok(/if \(stale\) window\.location\.reload\(\)/.test(client),
+    'only a page that predates the new process may reload')
+  assert.ok(!/let lastBoot = pending\.boot;/.test(client),
+    'the marker boot must not be mutable watcher state')
+})
+
+test('the boot poll is fast enough that users do not refresh manually', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  assert.ok(/window\.setTimeout\(poll, 250\)/.test(client),
+    'the marker watcher must start polling almost immediately')
+  assert.ok(/poll, 600\);/.test(client),
+    'the marker watcher must re-poll about twice a second')
+  assert.ok(!/setTimeout\(poll, 1500\)/.test(client),
+    'no poll interval may stay at the old 1.5 s')
+  assert.ok(!client.includes('届时刷新网页即可恢复'),
+    'the completion copy must promise the automatic reload instead of a manual one')
+})
+
+test('the running button shows progressive wording instead of a fake percentage', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // The server only reports stages, never a total duration, so any percentage is
+  // a guess. A guessed number that stalls is worse than no number at all.
+  assert.ok(!/updateLabel = wide \? upStep \+ " " \+ upPct \+ "%"/.test(client),
+    'the running label must not append a percentage')
+  assert.ok(/updateLabel = wide \? \(upStep \|\|/.test(client),
+    'the running label must be the stage wording alone')
+  assert.ok(/ing: tr\("安装中"\)/.test(client),
+    'each stage must carry a progressive-form label')
+  assert.ok(/setUpStep\(step\.ing \|\| step\.text\)/.test(client),
+    'progress tracking must switch the button to the progressive label')
+  // The indeterminate sweep needs a keyframe animation, injected once.
+  assert.ok(/@keyframes dshUpdateSweep/.test(client),
+    'the indeterminate bar needs a sweep animation')
+  assert.ok(/function ensureProgressAnim\(\)/.test(client) && /PROGRESS_ANIM_ID/.test(client),
+    'the animation must be injected once and deduplicated by id')
+  // Completion wording must say what finished, not a generic check mark.
+  assert.ok(/upPhase === "done"\) \{\r?\n\s*updateLabel = wide \? \(targetTagNow \? tr\("回退完成"\) : tr\("更新完成"\)\)/.test(client),
+    'completion must name the operation that just finished')
+})
+
+test('the progress window stays open and can be closed without killing the run', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // Reopening the window must not restart the check while a task is running.
+  assert.ok(/const keepView = upPhase === "running" \|\| upPhase === "conflict"|const keepView = upPhase === "running" \|\| upPhase === "confirm"/.test(client),
+    'reopening during a run must not overwrite the progress view')
+  // Closing must not invalidate the token mid-run, or every later event is dropped.
+  assert.ok(/if \(upPhase !== "running"\) runToken\.current\+\+/.test(client),
+    'closing the window during a run must keep the stream alive')
+  assert.ok(/if \(open && upPhase !== "running"\) runToken\.current\+\+/.test(client),
+    'an outside click during a run must keep the stream alive too')
+  // The safety gate must still be able to surface its confirm card.
+  assert.ok(/setUpPhase\("confirm"\)/.test(client),
+    'a safety gate must be able to switch the window into the confirm state')
+})
+
+test('the panel warns about the blank screen in a prominent place', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // A first-time user seeing a whole blank page concludes the install broke.
+  // The warning has to be in the panel before the run, not only in the live log.
+  assert.ok(/function BlindHint\(\{ h, T \}\)/.test(client),
+    'the blank-screen hint must be its own component so it renders in every view')
+  assert.ok(/h\(BlindHint, \{ h, T \}\)/.test(client),
+    'the panel must actually render the hint')
+  const hintIdx = client.indexOf('h(BlindHint, { h, T })')
+  const bodyIdx = client.indexOf('display: "flex", flexDirection: "column", gap: 8, minWidth: 0', hintIdx)
+  assert.ok(hintIdx > 0 && bodyIdx > hintIdx,
+    'the hint must sit above the body, in the path the eye already travels')
+  // Dark themes turn a blank page black, so the copy cannot say "white screen" only.
+  assert.ok(client.includes('深色主题下是黑屏'),
+    'the wording must cover dark themes, where the blank page is black')
+  assert.ok(client.includes('浅色主题下是白屏'),
+    'the wording must also cover light themes, where it really is white')
+})
+
+test('the auto-check toggle is geometrically symmetric', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // Track 34x19, knob 13x13: an inset of 2 horizontally and 3 vertically keeps
+  // the knob centred. The old values (left 17, top 2) left 4px on the right and
+  // 4px at the bottom, which reads as a knob that is off-centre.
+  assert.ok(/width: 34, height: 19/.test(client), 'the track keeps its size')
+  assert.ok(/width: 13, height: 13/.test(client), 'the knob keeps its size')
+  assert.ok(/left: enabled \? 19 : 2/.test(client),
+    'an enabled knob must sit 2px from the right edge (34 - 13 - 2 = 19)')
+  assert.ok(/top: 3, left: enabled \? 19/.test(client),
+    'the knob must be vertically centred ((19 - 13) / 2 = 3)')
+  assert.ok(!/left: enabled \? 17 : 2/.test(client),
+    'the asymmetric 17px offset must be gone')
+})
+
+test('the auto-check row matches the typography of the rows above it', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // Measured in the browser: 网络 and 端口 labels are 11px starting at x=24.7;
+  // the auto-check label was 11.5px and started 2px further right, so the row
+  // read as slightly out of line. Same size, same trailing margin as 网络.
+  assert.ok(/fontSize: 11, color: T\.secondary, whiteSpace: "nowrap", marginRight: 2/.test(client),
+    'the auto-check label must use the same 11px and trailing margin as its siblings')
+  assert.ok(!/fontSize: 11\.5, color: T\.secondary, whiteSpace: "nowrap" \},/.test(client),
+    'the old 11.5px auto-check label must be gone')
+})
+
+test('running-state visuals use a fixed blue, not the theme brand', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // Measured in the running GUI: --dsw-alias-brand-primary resolves to #0f1115
+  // here, so the old `color-mix(in srgb, T.brand 28%, transparent)` band came out
+  // as color(srgb 0.06 0.07 0.08 / 0.28) — a grey-black blob on a light sidebar.
+  // A progress indicator must read as active regardless of the theme.
+  assert.ok(client.includes('const RUN_BLUE = "#4f8cff"'),
+    'the running blue must be a fixed constant')
+  assert.ok(client.includes('background: RUN_BLUE, animation: "dshUpdateSweep'),
+    'the panel sweep band must use the fixed blue')
+  assert.ok(client.includes('color-mix(in srgb, " + RUN_BLUE + " 16%'),
+    'the panel sweep track must use the fixed blue')
+  assert.ok(client.includes('color-mix(in srgb, " + RUN_BLUE + " 45%'),
+    'the button sweep band must use the fixed blue, a step stronger than the track')
+  assert.ok(/color: RUN_BLUE, cursor: "pointer", background: "color-mix\(in srgb, " \+ RUN_BLUE/.test(client),
+    'the running button label must be blue too, not the theme brand')
+  assert.ok(!/color-mix\(in srgb, " \+ T\.brand \+ " 28%/.test(client),
+    'the old theme-brand band must be gone')
+})
+
+test('the new-version badge sits after the label instead of covering it', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // Measured: the button is 114x32 with 0 10px padding and 8px gap, so the label's
+  // right edge is 10px from the button's right edge. An absolutely positioned 7px
+  // dot at `right: 6` occupied right-13..right-6 and therefore overlapped the last
+  // glyph; vertically 6..13 it landed on the cap height of a 13px label, reading as
+  // a speck of dirt rather than a notification.
+  const wideIdx = client.indexOf('opts.badge) ? h("span"')
+  assert.ok(wideIdx > 0, 'the badge must still be rendered')
+  const block = client.slice(wideIdx, wideIdx + 900)
+  // The wide-state style is the flex branch; the absolute one is the rail fallback.
+  assert.ok(/style: wide \? \{/.test(block),
+    'the badge must branch on wide vs rail layout')
+  assert.ok(/flex: "0 0 auto", width: 7, height: 7/.test(block),
+    'in the wide state the dot is a flex item, so it takes its own slot after the label')
+  assert.ok(!/top: 6, right: 6,\r?\n\s*width: 7, height: 7/.test(block),
+    'the wide state must not absolutely position the dot over the text any more')
+  // The rail state has no label, so its corner placement stays.
+  assert.ok(/position: "absolute", top: 5, right: 5/.test(block),
+    'the collapsed rail keeps its corner dot, moved clear of the icon edge')
+  // A tinted halo reads as a deliberate marker on any background.
+  assert.ok(/color-mix\(in srgb, " \+ T\.danger \+ " 18%/.test(block),
+    'the dot needs a tinted halo instead of relying on a hard white ring')
 })
