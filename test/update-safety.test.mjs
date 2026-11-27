@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { generateKeyPairSync, randomBytes, sign as cryptoSign } from 'node:crypto'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import http from 'node:http'
+import https from 'node:https'
+import net from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 import {
   bootLogFailureReason,
   compareTags,
@@ -24,7 +29,7 @@ import {
   tagHealthMessages,
   DEFAULT_REQUIRED_PATHS,
 } from '../lib/safety.js'
-import { apply, UPDATE_PATHS, inject, bootVerifyHelperSource, updateHelperSource, sanitizeGitEnv } from '../lib/index.js'
+import { apply, UPDATE_PATHS, inject, bootVerifyHelperSource, updateHelperSource, sanitizeGitEnv, runUpdateStreaming, fetchJson } from '../lib/index.js'
 // 同一份判据也必须覆盖 safety.js 自己那份 GIT_ENV（它独立于 index.js）。
 import { sanitizeGitEnv as sanitizeGitEnvFromSafety } from '../lib/safety.js'
 
@@ -460,19 +465,24 @@ test('sanitizeGitEnv strips every malformed GIT_CONFIG_* shape git rejects', () 
     'KEY is only whitespace': { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: '   ', GIT_CONFIG_VALUE_0: 'v' },
     'lowercase keys (Windows env is case-insensitive)': { git_config_count: '2', git_config_value_0: 'a', git_config_value_1: 'b' },
   }
+  assert.equal(sanitizeGitEnvFromSafety, sanitizeGitEnv)
   for (const [name, extra] of Object.entries(malformed)) {
-    const clean = sanitizeGitEnv({ ...base, ...extra })
-    const leaked = Object.keys(clean).filter((key) => /^GIT_CONFIG_/.test(key))
-    assert.deepEqual(leaked, [], `${name}: leaked ${leaked.join(', ')}`)
-    assert.equal(clean.PATH, 'x', `${name}: unrelated vars must survive`)
+    for (const fn of [sanitizeGitEnv, sanitizeGitEnvFromSafety]) {
+      const clean = fn({ ...base, ...extra })
+      const leaked = Object.keys(clean).filter((key) => /^GIT_CONFIG_/.test(key))
+      assert.deepEqual(leaked, [], `${name}: leaked ${leaked.join(', ')}`)
+      assert.equal(clean.PATH, 'x', `${name}: unrelated vars must survive`)
+    }
   }
 
   // 完整合法的注入必须原样保留：那是用户/父进程有意设置的 git 配置。
   const intact = { ...base, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: 'store' }
   assert.deepEqual(sanitizeGitEnv(intact), intact)
+  assert.deepEqual(sanitizeGitEnvFromSafety(intact), intact)
 
   // 完全没有注入时零改动（最常见路径）。
   assert.equal(sanitizeGitEnv(base), base)
+  assert.equal(sanitizeGitEnvFromSafety(base), base)
 })
 
 test('a git call survives a poisoned GIT_CONFIG_* environment', () => {
@@ -559,16 +569,21 @@ test('inject declares connection so the host admission service is available', ()
 
 test('apply mounts all routes on connection.fetch, never on bare webServer', async () => {
   const { ctx, routes, webServerRoutes } = mockCtx()
-  apply(ctx, { repoDir: mkdtempSync(join(tmpdir(), 'dsh-update-routes-')) })
-  assert.equal(webServerRoutes.length, 0, 'no route may bypass connection auth via webServer.register')
-  assert.deepEqual([...routes.keys()].sort(), [
-    UPDATE_PATHS.status, UPDATE_PATHS.ping, UPDATE_PATHS.notes, UPDATE_PATHS.run, UPDATE_PATHS.restart,
-  ].sort())
-  assert.deepEqual(routes.get(UPDATE_PATHS.status).methods, ['GET'])
-  assert.deepEqual(routes.get(UPDATE_PATHS.run).methods, ['POST'])
-  assert.equal(routes.get(UPDATE_PATHS.run).requestBody, 'streaming')
-  assert.equal(routes.get(UPDATE_PATHS.restart).requestBody, 'buffered')
-  await ctx._dispose()
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-update-routes-'))
+  try {
+    apply(ctx, { repoDir: dir })
+    assert.equal(webServerRoutes.length, 0, 'no route may bypass connection auth via webServer.register')
+    assert.deepEqual([...routes.keys()].sort(), [
+      UPDATE_PATHS.status, UPDATE_PATHS.ping, UPDATE_PATHS.notes, UPDATE_PATHS.run, UPDATE_PATHS.restart,
+    ].sort())
+    assert.deepEqual(routes.get(UPDATE_PATHS.status).methods, ['GET'])
+    assert.deepEqual(routes.get(UPDATE_PATHS.run).methods, ['POST'])
+    assert.equal(routes.get(UPDATE_PATHS.run).requestBody, 'streaming')
+    assert.equal(routes.get(UPDATE_PATHS.restart).requestBody, 'buffered')
+    await ctx._dispose()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('fetch handlers answer a normal GET with a JSON Response', async () => {
@@ -984,4 +999,780 @@ test('the new-version badge sits after the label instead of covering it', () => 
   // A tinted halo reads as a deliberate marker on any background.
   assert.ok(/color-mix\(in srgb, " \+ T\.danger \+ " 18%/.test(block),
     'the dot needs a tinted halo instead of relying on a hard white ring')
+})
+
+
+// ---- 新增运行时行为测试 -----------------------------------------------------
+
+test('semverSatisfies covers caret/tilde/comparator shorthands, spaced operators, and hyphen ranges', () => {
+  const cases = [
+    // ^0 / ^0.0 / ^0.2 / ^1.2
+    ['0.0.0', '^0', true],
+    ['0.9.9', '^0', true],
+    ['1.0.0', '^0', false],
+    ['0.0.0', '^0.0', true],
+    ['0.0.9', '^0.0', true],
+    ['0.1.0', '^0.0', false],
+    ['0.2.0', '^0.2', true],
+    ['0.2.9', '^0.2', true],
+    ['0.1.9', '^0.2', false],
+    ['0.3.0', '^0.2', false],
+    ['1.2.0', '^1.2', true],
+    ['1.9.9', '^1.2', true],
+    ['1.1.9', '^1.2', false],
+    ['2.0.0', '^1.2', false],
+    // ~1
+    ['1.0.0', '~1', true],
+    ['1.9.9', '~1', true],
+    ['0.9.9', '~1', false],
+    ['2.0.0', '~1', false],
+    // <=1.2 / <=1 / >1.2 / >1 / <1.2 / >=1.2
+    ['1.2.9', '<=1.2', true],
+    ['1.3.0', '<=1.2', false],
+    ['1.9.9', '<=1', true],
+    ['2.0.0', '<=1', false],
+    ['1.2.9', '>1.2', false],
+    ['1.3.0', '>1.2', true],
+    ['1.9.9', '>1', false],
+    ['2.0.0', '>1', true],
+    ['1.1.9', '<1.2', true],
+    ['1.2.0', '<1.2', false],
+    ['1.1.9', '>=1.2', false],
+    ['1.2.0', '>=1.2', true],
+    ['1.2.5', '>=1.2', true],
+    // 操作符带空格
+    ['0.2.0', '>= 0.2.0', true],
+    ['0.1.9', '>= 0.2.0', false],
+    ['1.5.0', '^ 1.0.0', true],
+    ['2.0.0', '^ 1.0.0', false],
+    ['1.2.9', '<= 1.2', true],
+    ['1.3.0', '<= 1.2', false],
+    // 连字符范围
+    ['0.0.9', '0.1.0 - 0.2.9', false],
+    ['0.1.0', '0.1.0 - 0.2.9', true],
+    ['0.2.9', '0.1.0 - 0.2.9', true],
+    ['0.3.0', '0.1.0 - 0.2.9', false],
+    ['0.9.9', '1.0.0 - 1', false],
+    ['1.0.0', '1.0.0 - 1', true],
+    ['1.9.9', '1.0.0 - 1', true],
+    ['2.0.0', '1.0.0 - 1', false],
+  ]
+  for (const [version, range, expected] of cases) {
+    assert.equal(semverSatisfies(version, range), expected, `${version} satisfies ${range}`)
+  }
+})
+
+/** 创建带 origin 与 local 两个临时 git 仓库，方便离线实测 fetch / checkout / stash。 */
+function setupOriginAndLocalRepos() {
+  const base = mkdtempSync(join(tmpdir(), 'dsh-git-pair-'))
+  const originDir = join(base, 'origin')
+  const localDir = join(base, 'local')
+  mkdirSync(originDir, { recursive: true })
+  git(originDir, ['init'])
+  writeFileSync(
+    join(originDir, 'package.json'),
+    JSON.stringify({ name: 'tmp-dsh', version: '0.1.0', private: true, scripts: { clean: 'node -e ""', build: 'node -e ""' } }) + '\n',
+  )
+  writeFileSync(join(originDir, 'notes.txt'), 'v1\n')
+  git(originDir, ['add', '.'])
+  git(originDir, ['commit', '-m', 'release 0.1.0'])
+  git(originDir, ['tag', 'dsh-v0.1.0'])
+
+  git(base, ['clone', '-q', originDir, localDir])
+
+  writeFileSync(
+    join(originDir, 'package.json'),
+    JSON.stringify({ name: 'tmp-dsh', version: '0.2.0', private: true, scripts: { clean: 'node -e ""', build: 'node -e ""' } }) + '\n',
+  )
+  writeFileSync(join(originDir, 'notes.txt'), 'v2\n')
+  git(originDir, ['add', '.'])
+  git(originDir, ['commit', '-m', 'release 0.2.0'])
+  git(originDir, ['tag', 'dsh-v0.2.0'])
+
+  return { base, originDir, localDir }
+}
+
+/** 构造内存桩响应，同时按时间顺序记录每次 write / end。 */
+function createStubRes() {
+  const lines = []
+  const timeline = []
+  let ended = false
+  return {
+    lines,
+    timeline,
+    get ended() { return ended },
+    res: {
+      writeHead() {},
+      flushHeaders() {},
+      write(chunk) {
+        const text = String(chunk)
+        lines.push(text)
+        for (const row of text.split('\n')) {
+          if (row.trim() !== '') timeline.push({ kind: 'write', event: JSON.parse(row) })
+        }
+      },
+      end() {
+        ended = true
+        timeline.push({ kind: 'end' })
+      },
+      on() {},
+    },
+  }
+}
+
+test('runUpdateStreaming with stash: true leaves existing stash@{0} untouched when working tree is clean', async () => {
+  const { base, localDir } = setupOriginAndLocalRepos()
+  const binDir = join(base, 'bin')
+  mkdirSync(binDir, { recursive: true })
+  // 前置轻量 pnpm shim，保证测试秒级完成且完全离线稳定。
+  writeFileSync(join(binDir, 'pnpm.cmd'), '@echo off\r\nexit /b 0\r\n')
+  const posixShim = join(binDir, 'pnpm')
+  writeFileSync(posixShim, '#!/bin/sh\nexit 0\n')
+  chmodSync(posixShim, 0o755)
+
+  const prevPath = process.env.PATH ?? ''
+  process.env.PATH = `${binDir}${delimiter}${prevPath}`
+  try {
+    // 预先造一条用户历史 stash，之后工作树回到干净状态。
+    writeFileSync(join(localDir, 'notes.txt'), 'precious local edit\n')
+    git(localDir, ['stash', 'push', '-m', 'user-precious-stash'])
+    assert.equal(git(localDir, ['status', '--porcelain']).trim(), '')
+    assert.match(git(localDir, ['stash', 'list']), /user-precious-stash/)
+
+    const stub = createStubRes()
+    await runUpdateStreaming(localDir, stub.res, {
+      stash: true,
+      autoRestart: false,
+      windowsDetachedUpdate: false,
+      requiredPaths: [],
+      peerConflictPolicy: 'ignore',
+      profilesDir: join(base, 'no-profiles'),
+    })
+
+    assert.equal(stub.ended, true)
+    const events = stub.timeline.filter((x) => x.kind === 'write').map((x) => x.event)
+    const done = events.find((e) => e.type === 'done')
+    assert.ok(done !== undefined, 'stream must finish with a done event')
+    assert.equal(done.ok, true, `unexpected failure: ${done.error}`)
+    assert.equal(done.to, 'dsh-v0.2.0')
+    assert.equal(done.stashApplied, undefined, 'clean tree must not apply user stash')
+    assert.equal(done.stashKept, undefined)
+
+    assert.equal(git(localDir, ['describe', '--tags', '--exact-match', 'HEAD']).trim(), 'dsh-v0.2.0')
+    const stashes = git(localDir, ['stash', 'list']).trim().split(/\r?\n/).filter(Boolean)
+    assert.equal(stashes.length, 1, 'existing stash entry count must stay 1')
+    assert.match(stashes[0], /user-precious-stash/)
+    assert.equal(git(localDir, ['status', '--porcelain']).trim(), '', 'working tree must remain clean')
+  } finally {
+    process.env.PATH = prevPath
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('handleRun handles "null" JSON body safely without locking the latch, and returns 413 for >64KiB body', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-run-robust-'))
+  try {
+    const { ctx, routes } = mockCtx()
+    apply(ctx, { repoDir: root })
+    const runRoute = routes.get(UPDATE_PATHS.run).fetch
+
+    // 1. body 为 "null"：返回 200 SSE 并正常收尾，不抛 TypeError，也不锁死后续请求。
+    const resNull = await runRoute(new Request('http://localhost' + UPDATE_PATHS.run, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'null',
+    }))
+    assert.equal(resNull.status, 200)
+    assert.match(resNull.headers.get('content-type'), /text\/event-stream/)
+    const eventsNull = (await resNull.text()).split('\n').map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l))
+    const doneNull = eventsNull.find((e) => e.type === 'done')
+    assert.ok(doneNull !== undefined)
+    assert.equal(doneNull.ok, false)
+
+    // 紧接着再发一次 /run：不能返回 409。
+    const resNext = await runRoute(new Request('http://localhost' + UPDATE_PATHS.run, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    }))
+    assert.equal(resNext.status, 200, 'follow-up /run must not be blocked with 409')
+    const eventsNext = (await resNext.text()).split('\n').map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l))
+    assert.ok(eventsNext.some((e) => e.type === 'done'))
+
+    // 2. 超大 body（> 65536 字节）：返回 413。
+    const oversized = JSON.stringify({ pad: 'a'.repeat(70_000) })
+    assert.ok(Buffer.byteLength(oversized, 'utf8') > 65536)
+    const resBig = await runRoute(new Request('http://localhost' + UPDATE_PATHS.run, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: oversized,
+    }))
+    assert.equal(resBig.status, 413)
+    const bigBody = await resBig.json()
+    assert.equal(bigBody.ok, false)
+    assert.match(bigBody.error, /too large/i)
+
+    await ctx._dispose()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('/status, /release-notes, servingPort URL port, and no-port helper sources behave safely at runtime', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-routes-runtime-'))
+  const helperDir = mkdtempSync(join(tmpdir(), 'dsh-helper-noport-'))
+  try {
+    git(root, ['init'])
+    writeFileSync(join(root, 'a.txt'), '1\n')
+    git(root, ['add', '.'])
+    git(root, ['commit', '-m', 'init'])
+    git(root, ['tag', 'dsh-v0.1.0'])
+    git(root, ['remote', 'add', 'origin', 'https://example.com/a/b.git'])
+
+    const { ctx, routes } = mockCtx()
+    apply(ctx, { repoDir: root, autoRestart: false })
+
+    // 1. /status 不包含 restartScript，且非 GitHub origin 在 mirror 模式下返回中文 error。
+    const statusRoute = routes.get(UPDATE_PATHS.status).fetch
+    const statusRes = await statusRoute(new Request(
+      'http://localhost' + UPDATE_PATHS.status + '?source=mirror&mirror=gh-proxy',
+      { method: 'GET' },
+    ))
+    assert.equal(statusRes.status, 200)
+    const statusBody = await statusRes.json()
+    assert.equal('restartScript' in statusBody, false, '/status must not expose restartScript')
+    assert.equal(statusBody.ok, false)
+    assert.match(statusBody.error, /不是 GitHub 地址|无法使用镜像/)
+
+    // 2. 非 GitHub origin 在 mirror 模式下调用 /run 同样提前返回失败 done 事件。
+    const runRoute = routes.get(UPDATE_PATHS.run).fetch
+    const runMirrorRes = await runRoute(new Request('http://localhost' + UPDATE_PATHS.run, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'mirror', mirror: 'gh-proxy' }),
+    }))
+    assert.equal(runMirrorRes.status, 200)
+    const runMirrorEvents = (await runMirrorRes.text()).split('\n').map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l))
+    const runMirrorDone = runMirrorEvents.find((e) => e.type === 'done')
+    assert.ok(runMirrorDone !== undefined)
+    assert.equal(runMirrorDone.ok, false)
+    assert.match(runMirrorDone.error, /不是 GitHub 地址|无法使用镜像/)
+
+    // 3. /release-notes?tag=bad-tag 返回 400。
+    const notesRoute = routes.get(UPDATE_PATHS.notes).fetch
+    const notesRes = await notesRoute(new Request('http://localhost' + UPDATE_PATHS.notes + '?tag=bad-tag', { method: 'GET' }))
+    assert.equal(notesRes.status, 400)
+    const notesBody = await notesRes.json()
+    assert.equal(notesBody.ok, false)
+    assert.match(notesBody.error, /invalid tag/i)
+
+    // 4. 带 URL 端口（无 Host header）能正常处理。
+    const portReq = new Request('http://127.0.0.1:4321' + UPDATE_PATHS.run, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'mirror', mirror: 'gh-proxy' }),
+    })
+    assert.equal(portReq.headers.get('host'), null)
+    const portRes = await runRoute(portReq)
+    assert.equal(portRes.status, 200)
+    const portEvents = (await portRes.text()).split('\n').map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l))
+    assert.ok(portEvents.some((e) => e.type === 'done'))
+
+    // 5. 无 port 情况下的 helper 源码包含 5000 / 5500 等待、::1 探测与 < 32000 字符限制且语法合法。
+    const baseHelperCtx = {
+      repoDir: '/tmp/deepseek-harness',
+      target: 'dsh-v0.2.2-alpha.2',
+      rollbackRef: 'dsh-v0.2.1',
+      stashedSomething: false,
+      autoRestart: true,
+      port: null,
+      pm: { cmd: 'pnpm', args: [] },
+      spawnReplacement: {
+        file: 'node',
+        args: ['apps/cli/src/index.js'],
+        cwd: '/tmp/deepseek-harness',
+        viaShell: false,
+        detached: true,
+        windowsHide: false,
+      },
+      logs: { out: '/tmp/dsh-update-apply.out.log', err: '/tmp/dsh-update-apply.err.log' },
+      orphanLibRoots: ['packages', 'apps'],
+      bootHealthWindowMs: 15000,
+      safetyModule: '/tmp/dsh-update/lib/safety.js',
+    }
+    const updSrc = updateHelperSource(baseHelperCtx)
+    const bootSrc = bootVerifyHelperSource(baseHelperCtx)
+    for (const [name, src, waitMs] of [
+      ['update-noport', updSrc, '5500'],
+      ['boot-noport', bootSrc, '5000'],
+    ]) {
+      assert.ok(src.length < 32000, `${name} helper must be < 32000 chars (got ${src.length})`)
+      assert.ok(src.includes(waitMs), `${name} helper must wait ${waitMs}ms when port is null`)
+      assert.ok(src.includes('::1'), `${name} helper must probe ::1 as well as 127.0.0.1`)
+      const file = join(helperDir, `${name}.cjs`)
+      writeFileSync(file, src)
+      execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' })
+    }
+
+    await ctx._dispose()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(helperDir, { recursive: true, force: true })
+  }
+})
+
+test('runUpdateStreaming promise resolves only after res.end() following async git fetch', async () => {
+  const { base, localDir } = setupOriginAndLocalRepos()
+  try {
+    const stub = createStubRes()
+    await runUpdateStreaming(localDir, stub.res, {
+      targetTag: 'dsh-v0.9.9',
+      autoRestart: false,
+      windowsDetachedUpdate: false,
+    })
+    stub.timeline.push({ kind: 'resolved' })
+
+    assert.equal(stub.ended, true, 'res.end() must have run before promise resolves')
+    const endIdx = stub.timeline.findIndex((x) => x.kind === 'end')
+    const resolvedIdx = stub.timeline.findIndex((x) => x.kind === 'resolved')
+    assert.ok(endIdx !== -1 && endIdx < resolvedIdx, 'res.end() must happen strictly before promise resolution')
+
+    const steps = stub.timeline.filter((x) => x.kind === 'write').map((x) => x.event)
+    assert.ok(steps.some((e) => e.type === 'step' && /Fetching tags/.test(e.text)), 'must have run async git fetch')
+    assert.ok(steps.some((e) => e.type === 'step' && /Verifying tag dsh-v0\.9\.9/.test(e.text)), 'must continue into post-fetch verification')
+    const done = steps.find((e) => e.type === 'done')
+    assert.ok(done !== undefined && done.ok === false)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('client.js loads in node:vm, bails out safely without React, and guards reload watcher', async () => {
+  const clientCode = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+
+  function loadClient(opts = {}) {
+    let loaded = null
+    const store = new Map(Object.entries(opts.storage ?? {}))
+    const timers = []
+    let reloaded = 0
+    const sandbox = {
+      console,
+      Date,
+      Math,
+      JSON,
+      Number,
+      String,
+      Array,
+      Object,
+      Set,
+      Map,
+      RegExp,
+      Error,
+      Promise,
+      TextDecoder,
+      encodeURIComponent,
+      parseInt,
+      fetch: opts.fetch ?? (async () => ({ ok: false, status: 500 })),
+      navigator: { language: 'zh-CN' },
+      document: { documentElement: { lang: 'zh-CN' } },
+      window: {
+        __ModuleLoader__: { load(def) { loaded = def } },
+        localStorage: {
+          getItem(k) { return store.has(k) ? store.get(k) : null },
+          setItem(k, v) { store.set(k, String(v)) },
+          removeItem(k) { store.delete(k) },
+        },
+        location: { reload() { reloaded++ } },
+        performance: { timeOrigin: opts.timeOrigin ?? 10_000 },
+        setTimeout(fn, ms) { timers.push({ fn, ms }); return timers.length },
+        clearTimeout() {},
+      },
+    }
+    sandbox.setTimeout = sandbox.window.setTimeout
+    sandbox.clearTimeout = sandbox.window.clearTimeout
+    runInNewContext(clientCode, sandbox, { filename: 'lib/client.js' })
+    assert.ok(loaded !== null && typeof loaded.factory === 'function')
+    const exports = loaded.factory(opts.requireImpl ?? (() => { throw new Error('missing module') }))
+    return { exports, store, timers, getReloaded: () => reloaded }
+  }
+
+  // 1. 缺少 React 时 apply() 安全早退，不抛异常、不调用 slots.inject。
+  const noReact = loadClient()
+  assert.equal(noReact.exports.name, '@zhucy123/dsh-update')
+  assert.deepEqual([...noReact.exports.inject], ['slots'])
+  let injectCalled = false
+  noReact.exports.apply({ slots: { inject() { injectCalled = true } } })
+  assert.equal(injectCalled, false, 'apply() must bail out before slots.inject when React is missing')
+
+  // 2. React 缺少 useState 或 ctx 缺少 slots 时同样安全早退。
+  const partialReact = loadClient({ requireImpl: (id) => (id === 'react' ? {} : null) })
+  partialReact.exports.apply({ slots: { inject() { injectCalled = true } } })
+  assert.equal(injectCalled, false)
+
+  // 3. 有 React + slots 且 localStorage 含损坏数据时，apply() 正常注册且清理坏标记不抛错。
+  const reactStub = {
+    useState: (init) => [typeof init === 'function' ? init() : init, () => {}],
+    useEffect: () => {},
+    useRef: (v) => ({ current: v }),
+    useCallback: (fn) => fn,
+    createElement: (...args) => args,
+    Fragment: Symbol('Fragment'),
+  }
+  const corrupt = loadClient({
+    requireImpl: (id) => (id === 'react' ? reactStub : null),
+    storage: { 'dsh-update:pending-reload': '{not-valid-json' },
+  })
+  const registered = []
+  corrupt.exports.apply({
+    locale: { getLocale: () => ({ active: 'zh-CN' }), subscribe: () => () => {} },
+    slots: {
+      inject(slot, factory) { return factory() },
+      register(meta, component) { registered.push({ meta, component }); return () => {} },
+    },
+  })
+  assert.equal(registered.length, 1)
+  assert.equal(registered[0].meta.name, 'sidebar.footer.action')
+  assert.equal(registered[0].meta.id, 'dsh-update')
+  assert.equal(registered[0].meta.order, 1000)
+  assert.equal(corrupt.store.has('dsh-update:pending-reload'), false, 'corrupt pending-reload marker must be cleared')
+
+  // 4. 新进程时间戳晚于 pageLoadedAt 才刷新；早于 pageLoadedAt（用户已手动刷新）不二次刷新。
+  const nowMs = Date.now()
+  const oldBoot = `${(nowMs - 5000).toString(36)}-old`
+  const newerBoot = `${(nowMs + 5000).toString(36)}-new`
+  const staleCheck = loadClient({
+    requireImpl: (id) => (id === 'react' ? reactStub : null),
+    timeOrigin: nowMs,
+    storage: { 'dsh-update:pending-reload': JSON.stringify({ boot: oldBoot, target: 'dsh-v0.2.0', at: nowMs }) },
+    fetch: async () => ({ ok: true, json: async () => ({ boot: newerBoot }) }),
+  })
+  staleCheck.exports.apply({
+    locale: { getLocale: () => ({ active: 'zh-CN' }), subscribe: () => () => {} },
+    slots: { inject: () => {}, register: () => () => {} },
+  })
+  assert.equal(staleCheck.timers.length, 1)
+  await staleCheck.timers[0].fn()
+  assert.equal(staleCheck.getReloaded(), 1, 'page predating new process must reload')
+
+  const freshPageBoot = `${(nowMs - 1000).toString(36)}-curr`
+  const noDoubleReload = loadClient({
+    requireImpl: (id) => (id === 'react' ? reactStub : null),
+    timeOrigin: nowMs,
+    storage: { 'dsh-update:pending-reload': JSON.stringify({ boot: oldBoot, target: 'dsh-v0.2.0', at: nowMs }) },
+    fetch: async () => ({ ok: true, json: async () => ({ boot: freshPageBoot }) }),
+  })
+  noDoubleReload.exports.apply({
+    locale: { getLocale: () => ({ active: 'zh-CN' }), subscribe: () => () => {} },
+    slots: { inject: () => {}, register: () => () => {} },
+  })
+  await noDoubleReload.timers[0].fn()
+  assert.equal(noDoubleReload.getReloaded(), 0, 'page already served by the new process must not reload again')
+})
+
+// ---- 本地 HTTP CONNECT 代理与 release-notes 缓存隔离测试 ----------------------
+
+function derLen(len) {
+  if (len < 128) return Buffer.from([len])
+  const bytes = []
+  let n = len
+  while (n > 0) {
+    bytes.unshift(n & 0xff)
+    n >>= 8
+  }
+  return Buffer.from([0x80 | bytes.length, ...bytes])
+}
+
+function der(tag, ...parts) {
+  const body = Buffer.concat(parts)
+  return Buffer.concat([Buffer.from([tag]), derLen(body.length), body])
+}
+
+function derInt(buf) {
+  const b = buf[0] & 0x80 ? Buffer.concat([Buffer.from([0]), buf]) : buf
+  return der(0x02, b)
+}
+
+function derUtcTime(d) {
+  const pad = (n) => String(n).padStart(2, '0')
+  const s = String(d.getUTCFullYear()).slice(-2)
+    + pad(d.getUTCMonth() + 1)
+    + pad(d.getUTCDate())
+    + pad(d.getUTCHours())
+    + pad(d.getUTCMinutes())
+    + pad(d.getUTCSeconds())
+    + 'Z'
+  return der(0x17, Buffer.from(s, 'ascii'))
+}
+
+function createLoopbackTlsCert() {
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const spki = publicKey.export({ type: 'spki', format: 'der' })
+  const key = privateKey.export({ type: 'pkcs8', format: 'pem' })
+  const sha256Rsa = der(0x30, der(0x06, Buffer.from([0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b])), Buffer.from([0x05, 0x00]))
+  const cn = der(0x30, der(0x31, der(0x30, der(0x06, Buffer.from([0x55, 0x04, 0x03])), der(0x0c, Buffer.from('localhost')))))
+  const now = new Date(Date.now() - 60_000)
+  const later = new Date(Date.now() + 86_400_000)
+  const sanExt = der(0x30, der(0x06, Buffer.from([0x55, 0x1d, 0x11])), der(0x04, der(0x30, der(0x87, Buffer.from([127, 0, 0, 1])))))
+  const tbs = der(
+    0x30,
+    der(0xa0, derInt(Buffer.from([2]))),
+    derInt(randomBytes(8)),
+    sha256Rsa,
+    cn,
+    der(0x30, derUtcTime(now), derUtcTime(later)),
+    cn,
+    spki,
+    der(0xa3, der(0x30, sanExt)),
+  )
+  const sig = cryptoSign('sha256', tbs, privateKey)
+  const certDer = der(0x30, tbs, sha256Rsa, der(0x03, Buffer.from([0]), sig))
+  const cert = '-----BEGIN CERTIFICATE-----\n' + certDer.toString('base64').match(/.{1,64}/g).join('\n') + '\n-----END CERTIFICATE-----\n'
+  return { cert, key }
+}
+
+function listenServer(server) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      server.removeListener('error', reject)
+      const addr = server.address()
+      resolve(addr.port)
+    })
+  })
+}
+
+function closeServer(server) {
+  return new Promise((resolve) => {
+    server.closeAllConnections?.()
+    server.close(() => resolve())
+  })
+}
+
+test('fetchJson tunnels HTTPS through local HTTP CONNECT proxy (normal & chunked) and forwards HTTP GET', async () => {
+  const { cert, key } = createLoopbackTlsCert()
+  const httpsServer = https.createServer({ cert, key }, (req, res) => {
+    if (req.url === '/normal') {
+      const payload = JSON.stringify({ tag_name: 'dsh-v1.0.0', body: 'normal notes', html_url: 'https://github.com/a/b/releases/tag/dsh-v1.0.0' })
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)) })
+      res.end(payload)
+      return
+    }
+    if (req.url === '/chunked') {
+      res.writeHead(200, { 'content-type': 'application/json', 'transfer-encoding': 'chunked' })
+      res.write('{"body":"chunk')
+      res.write('-1 ')
+      res.end('chunk-2","ok":true}')
+      return
+    }
+    if (req.url === '/not-found') {
+      res.writeHead(404, { 'content-type': 'application/json', 'content-length': '2' })
+      res.end('{}')
+      return
+    }
+    if (req.url === '/bad-json') {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '5' })
+      res.end('{bad!')
+      return
+    }
+    if (req.url === '/oversized') {
+      const big = Buffer.alloc(2 * 1024 * 1024 + 64, 0x61)
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': String(big.length) })
+      res.end(big)
+      return
+    }
+    if (req.url === '/slow') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      // intentionally leave open to verify timeoutMs
+      return
+    }
+    res.writeHead(400)
+    res.end()
+  })
+
+  const httpTarget = http.createServer((req, res) => {
+    const payload = JSON.stringify({ via: 'http-proxy', path: req.url })
+    res.writeHead(200, { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)) })
+    res.end(payload)
+  })
+
+  const connectTargets = []
+  const proxyGetPaths = []
+  const proxyServer = http.createServer((req, res) => {
+    proxyGetPaths.push(req.url)
+    const targetUrl = new URL(req.url)
+    const upstream = http.request({
+      host: targetUrl.hostname,
+      port: Number(targetUrl.port || 80),
+      method: req.method,
+      path: `${targetUrl.pathname}${targetUrl.search}`,
+      headers: req.headers,
+    }, (upRes) => {
+      res.writeHead(upRes.statusCode ?? 502, upRes.headers)
+      upRes.pipe(res)
+    })
+    upstream.on('error', (err) => {
+      res.writeHead(502)
+      res.end(err.message)
+    })
+    req.pipe(upstream)
+  })
+
+  const openSockets = new Set()
+  proxyServer.on('connect', (req, clientSocket, head) => {
+    connectTargets.push(req.url)
+    const idx = req.url.lastIndexOf(':')
+    const host = req.url.slice(0, idx)
+    const port = Number(req.url.slice(idx + 1))
+    const upstream = net.connect(port, host, () => {
+      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+      if (head && head.length > 0) upstream.write(head)
+      upstream.pipe(clientSocket)
+      clientSocket.pipe(upstream)
+    })
+    openSockets.add(clientSocket)
+    openSockets.add(upstream)
+    const drop = () => {
+      openSockets.delete(clientSocket)
+      openSockets.delete(upstream)
+    }
+    clientSocket.on('close', drop)
+    upstream.on('close', drop)
+    clientSocket.on('error', () => upstream.destroy())
+    upstream.on('error', () => clientSocket.destroy())
+  })
+
+  const httpsPort = await listenServer(httpsServer)
+  const httpPort = await listenServer(httpTarget)
+  const proxyPort = await listenServer(proxyServer)
+
+  try {
+    // 1. HTTPS CONNECT + normal Content-Length JSON (verified against self-signed CA)
+    const normal = await fetchJson(`https://127.0.0.1:${httpsPort}/normal`, 3000, proxyPort, { ca: cert })
+    assert.equal(normal.error, undefined)
+    assert.equal(normal.json.body, 'normal notes')
+
+    // 2. HTTPS CONNECT + Transfer-Encoding: chunked JSON (also exercising rejectUnauthorized: false)
+    const chunked = await fetchJson(`https://127.0.0.1:${httpsPort}/chunked`, 3000, proxyPort, { rejectUnauthorized: false })
+    assert.equal(chunked.error, undefined)
+    assert.equal(chunked.json.body, 'chunk-1 chunk-2')
+    assert.equal(chunked.json.ok, true)
+
+    assert.deepEqual(connectTargets, [`127.0.0.1:${httpsPort}`, `127.0.0.1:${httpsPort}`])
+
+    // 3. Non-2xx, invalid JSON, oversized body, and shared timeout
+    const notFound = await fetchJson(`https://127.0.0.1:${httpsPort}/not-found`, 3000, proxyPort, { ca: cert })
+    assert.equal(notFound.error, 'HTTP 404')
+
+    const badJson = await fetchJson(`https://127.0.0.1:${httpsPort}/bad-json`, 3000, proxyPort, { ca: cert })
+    assert.ok(typeof badJson.error === 'string' && badJson.error.length > 0)
+
+    const oversized = await fetchJson(`https://127.0.0.1:${httpsPort}/oversized`, 3000, proxyPort, { ca: cert })
+    assert.match(oversized.error, /too large/i)
+
+    const timedOut = await fetchJson(`https://127.0.0.1:${httpsPort}/slow`, 150, proxyPort, { ca: cert })
+    assert.match(timedOut.error, /timed out/i)
+
+    // 4. http:// URL routed via proxy absolute-form GET
+    const httpViaProxy = await fetchJson(`http://127.0.0.1:${httpPort}/hello?x=1`, 3000, proxyPort)
+    assert.equal(httpViaProxy.error, undefined)
+    assert.equal(httpViaProxy.json.via, 'http-proxy')
+    assert.equal(httpViaProxy.json.path, '/hello?x=1')
+    assert.deepEqual(proxyGetPaths, [`http://127.0.0.1:${httpPort}/hello?x=1`])
+  } finally {
+    for (const s of openSockets) s.destroy()
+    await Promise.all([closeServer(proxyServer), closeServer(httpsServer), closeServer(httpTarget)])
+  }
+})
+
+test('fetchJson fails fast without leaking handles on 502 CONNECT rejection or closed proxy port', async () => {
+  const rejectProxy = http.createServer((_req, res) => {
+    res.writeHead(502)
+    res.end()
+  })
+  rejectProxy.on('connect', (_req, socket) => {
+    socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n')
+  })
+  const rejectPort = await listenServer(rejectProxy)
+
+  // Probe an ephemeral port then close it so nothing listens there.
+  const tmpSrv = net.createServer()
+  const closedPort = await listenServer(tmpSrv)
+  await closeServer(tmpSrv)
+
+  try {
+    const r502 = await fetchJson('https://127.0.0.1:443/repos/a/b/releases/tags/dsh-v0.1.0', 2000, rejectPort)
+    assert.equal(r502.error, 'Proxy CONNECT HTTP 502')
+
+    const rClosed = await fetchJson('https://127.0.0.1:443/repos/a/b/releases/tags/dsh-v0.1.0', 2000, closedPort)
+    assert.ok(typeof rClosed.error === 'string' && rClosed.error.length > 0)
+  } finally {
+    await closeServer(rejectProxy)
+  }
+})
+
+test('/api/dsh-update/release-notes routes github+proxyPort through proxy and isolates error cache per proxyPort', async () => {
+  const makeRejectProxy = (statusCode) => {
+    let hits = 0
+    const srv = http.createServer((_req, res) => {
+      res.writeHead(statusCode)
+      res.end()
+    })
+    srv.on('connect', (_req, socket) => {
+      hits++
+      socket.end(`HTTP/1.1 ${statusCode} Proxy Error\r\n\r\n`)
+    })
+    return { srv, hitsOf: () => hits }
+  }
+
+  const proxyA = makeRejectProxy(502)
+  const proxyB = makeRejectProxy(503)
+  const portA = await listenServer(proxyA.srv)
+  const portB = await listenServer(proxyB.srv)
+
+  const root = mkdtempSync(join(tmpdir(), 'dsh-notes-proxy-'))
+  try {
+    git(root, ['init'])
+    git(root, ['remote', 'add', 'origin', 'https://github.com/deepseek-ai/deepseek-harness.git'])
+    const { ctx, routes } = mockCtx()
+    apply(ctx, { repoDir: root })
+    const notesRoute = routes.get(UPDATE_PATHS.notes).fetch
+    const tag = `dsh-v0.0.1-proxy${Date.now()}`
+
+    // 1. First request with proxyPort=portA hits Proxy A and caches under github:<portA>.
+    const resA1 = await notesRoute(new Request(
+      `http://localhost${UPDATE_PATHS.notes}?tag=${tag}&source=github&proxyPort=${portA}`,
+      { method: 'GET' },
+    ))
+    assert.equal(resA1.status, 200)
+    const bodyA1 = await resA1.json()
+    assert.equal(bodyA1.ok, false)
+    assert.equal(bodyA1.error, 'Proxy CONNECT HTTP 502')
+    assert.equal(proxyA.hitsOf(), 1)
+
+    // 2. Request with different proxyPort=portB must NOT reuse portA's 5-min error cache.
+    const resB = await notesRoute(new Request(
+      `http://localhost${UPDATE_PATHS.notes}?tag=${tag}&source=github&proxyPort=${portB}`,
+      { method: 'GET' },
+    ))
+    assert.equal(resB.status, 200)
+    const bodyB = await resB.json()
+    assert.equal(bodyB.ok, false)
+    assert.equal(bodyB.error, 'Proxy CONNECT HTTP 503')
+    assert.equal(proxyB.hitsOf(), 1)
+
+    // 3. Second request with portA hits portA's own cache (no extra CONNECT hit).
+    const resA2 = await notesRoute(new Request(
+      `http://localhost${UPDATE_PATHS.notes}?tag=${tag}&source=github&proxyPort=${portA}`,
+      { method: 'GET' },
+    ))
+    assert.equal(resA2.status, 200)
+    const bodyA2 = await resA2.json()
+    assert.equal(bodyA2.error, 'Proxy CONNECT HTTP 502')
+    assert.equal(proxyA.hitsOf(), 1)
+
+    await ctx._dispose()
+  } finally {
+    await Promise.all([closeServer(proxyA.srv), closeServer(proxyB.srv)])
+    rmSync(root, { recursive: true, force: true })
+  }
 })
