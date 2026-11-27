@@ -33,7 +33,7 @@ Install the plugin and the bottom of the sidebar gains a "Check for updates" but
 
 The button sits at the bottom of the sidebar and **sizes itself to its label** instead of stretching across the row. Sibling buttons on the same row sit side by side when their heights are close and each takes its own row when they differ a lot — in the screenshot below Remote is 42px and ours is 32px, so each gets its own row:
 
-<p align="left"><img src="docs/images/sidebar-layout-en.png" width="336" alt="Bottom of the sidebar: Remote and Check for updates, at different heights, each on its own row"></p>
+<p align="left"><img src="docs/images/sidebar-layout-en.png" width="176" alt="Bottom of the sidebar: Remote and Check for updates, at different heights, each on its own row"></p>
 
 ### The check-for-updates popover
 
@@ -41,7 +41,7 @@ Clicking opens a popover anchored to the button, not a full-screen overlay. It i
 
 <table>
 <tr>
-<td><img src="docs/images/panel-en.png" width="300" alt="Check for updates popover: network source, automatic checks, version comparison, switch to another version"></td>
+<td><img src="docs/images/panel-en.png" width="300" alt="Check for updates popover: network source, automatic checks, version comparison, roll back to an older version"></td>
 <td><img src="docs/images/panel-ja.png" width="300" alt="Japanese UI"></td>
 </tr>
 <tr>
@@ -81,11 +81,11 @@ The top of the popover lets you switch the connection path on the fly; the choic
 
 | Source | Behavior |
 |---|---|
-| **Auto** (default) | Tries GitHub directly first; after a timeout (8s) retries each mirror on the list in turn and remembers the first one that works |
+| **Auto** (default) | Tries GitHub directly first; after an 8-second timeout, retries `gitProxy` and the mirror list (`gh-proxy.com` / `ghproxy.net` / `ghfast.top`) in turn, and remembers the first mirror that works |
 | **Official** | GitHub direct only, with an optional local proxy port (7890 for Clash / V2Ray and the like) |
-| **Mirror** | Pins one of `gh-proxy.com` / `ghproxy.net` / `ghfast.top` |
+| **Mirror** | Pins one of `gh-proxy.com` / `ghproxy.net` / `ghfast.top`; if the repo `origin` is not a GitHub URL, it fails immediately with an error instead of continuing |
 
-An empty proxy port means a direct connection. Running an update goes through the same path you selected.
+An empty proxy port means a direct connection. Choosing "Official + local proxy port" applies **end-to-end**: not only to version checks (`git ls-remote`) and update/rollback fetches (`git fetch`), but also to `/api/dsh-update/release-notes` when fetching GitHub release notes, via an HTTP `CONNECT` tunnel built on Node's `node:http` / `node:tls`.
 
 ### Automatic checks
 
@@ -133,7 +133,7 @@ The dangerous part of an update is not failing to fetch — it is ending up with
 | Gate | Blocks | How to release it |
 |---|---|---|
 | **Required paths** | The target tag is missing `packages/client/ui-context-menu/package.json` (which provides `contextMenus`) — after checkout the web UI sits at `Failed to load plugins` | Click "Check out anyway" in the panel, or set `allowMissingRequiredPaths: true`; `requiredPaths: []` turns the check off entirely |
-| **Peer conflicts** | Installed plugins' harness / dsh `peerDependencies` don't cover the target version (WorkBuddy and friends pin exact versions) | Listed for you to confirm by default; can be set to `block` / `ignore` |
+| **Peer conflicts** | Enabled plugins' harness / dsh `peerDependencies` don't cover the target version (WorkBuddy-style pins). Scans only enabled bundles in `dsh.profile.bundles` (including symlink / Junction plugin directories), supports standard npm semver ranges (including whitespace-separated operators and hyphen ranges), and cross-checks prereleases against their stable version to avoid false positives | Listed for you to confirm by default; can be set to `block` / `ignore` |
 | **Leftover lib/** | A `lib/` directory gitignored by an older version survives on disk after the new tag deletes that package (the classic case: an old `ui-context-menu/lib` keeps injecting `contextMenus`) | Automatic: deletes only the `lib/` of packages that exist in the old tree but not the new one, under the whitelisted top-level dirs (`packages/`, `apps/`) |
 | **Startup log** | The build succeeded but the log after restart contains `did not activate` / `Failed to load plugins` | Automatic rollback, no intervention needed |
 
@@ -141,18 +141,19 @@ A failing `pnpm run clean` aborts and rolls back the same way — it is never tr
 
 ### Rolling back
 
-To go back, pick an older `dsh-v*` tag under "Or roll back to an older version"; the button always says "roll back to this version". The version list only contains tags older than current — upgrades are handled by the top-level "start update" button, so there is no duplication, and an up-to-date view has no contradictory "update to this version" option. Rollbacks go through the same safety checks as updates.
+To go back, pick an older `dsh-v*` tag under "Or roll back to an older version"; the button always says "Roll back to this version". Tag comparison and version ordering use full semver numeric ordering for prereleases (such as `alpha.10` vs `alpha.2`). The version list only contains tags older than current — upgrades are handled by the top-level "Start update" button, so there is no duplication, and an up-to-date view has no contradictory "update to this version" option. Rollbacks go through the same safety checks as updates.
 
 A successful rollback also restarts automatically and refreshes the page, with nothing to do by hand.
 
-When a rollback is blocked by a safety gate (conflicting local changes, a target missing a required path, incompatible peers), a confirmation card lists the reason: which files conflict, which plugin is incompatible, which path is missing — with a "roll back anyway" button. Confirming keeps the progress you already made; cancelling restores the button to normal. Conflict details are collapsed by default instead of flooding the panel.
+When a rollback is blocked by a safety gate (conflicting local changes, a target missing a required path, incompatible peers), a confirmation card lists the reason: which files conflict, which plugin is incompatible, which path is missing — with a "Roll back anyway" button. Confirming keeps the progress you already made; cancelling restores the button to normal. Conflict details are collapsed by default instead of flooding the panel.
 
 ### Your local changes are never lost
 
-- `git stash push -u` before updating (untracked files included), then `stash apply` restores them as they were on success
-- If the new version touches the same file and conflicts, the changes **stay safely in the stash** and the panel says so explicitly: "not lost — you can run `git stash apply` by hand in the repo directory"
+- Checks `git status --porcelain` before auto-stashing — when the working tree is clean, it skips `git stash push` so an existing `stash@{0}` is never touched
+- When changes exist, runs `git stash push -u` before updating (untracked files included), then `stash apply` restores them as they were on success
+- If the new version touches the same file and `stash apply` conflicts, the **stash entry is kept (never dropped)** and `git reset --hard HEAD` restores a clean working tree before continuing the build, while the panel states plainly: "not lost — you can run `git stash apply` by hand in the repo directory"
 - The panel has an "Auto-stash and continue updating / rolling back" button, so you never need to open a terminal
-- Before rolling back it runs `stash push -u` again, so a rollback can't wipe out your changes
+- Before rolling back it also checks `git status --porcelain` and runs `stash push -u` when dirty, so a rollback can't wipe out your changes
 
 ### Automatic rollback on failure
 
@@ -167,6 +168,9 @@ Chinese / English / Japanese. The language is resolved in order from `ctx.locale
 - Only one update task at a time; a duplicate trigger returns 409
 - All 5 API routes are mounted on DSH's **shared authenticated `/api` channel** (`ctx.connection.fetch.register`). The host applies its Host/Origin trust fence (anti DNS-rebinding / cross-origin) and browser login check before a request reaches the plugin — no web page open in your browser can call them. The 401/403 comes from the host, not the plugin
 - System-mutating endpoints such as `/run` and `/restart` are therefore login-gated; the plugin keeps only policy checks (supervisor / `allowRestart` / in-flight task / target-tag whitelist)
+- `POST /api/dsh-update/run` caps the request body at 64 KiB (returns 413 if exceeded) and validates that the parsed payload is a JSON object
+- When turns are in progress, the force-update second confirmation preserves user options such as auto-stash (`stash`); clicking the sidebar button in the `done` / `error` state to re-check also preserves the selected network source and proxy configuration
+- Restart and background-install port probing checks both `127.0.0.1` and `::1` (IPv6 loopback)
 - Every git invocation forces `GIT_TERMINAL_PROMPT=0`; credentials are never requested interactively
 - Rollback targets must carry the `dsh-v*` prefix — arbitrary refs are rejected
 - Requires DSH `>=0.2.3` (alphas included); the shared `/api` admission model stabilised in 0.2.3. `engines.dsh: ">=0.2.3-0"` lets `0.2.3-alpha.*` satisfy it
@@ -281,11 +285,12 @@ flowchart TD
 
 | Platform | Status | Notes |
 |---|---|---|
-| Windows | ✅ | `pnpm` goes through its `.cmd` shim via the shell; restart is launched silently with PowerShell `-WindowStyle Hidden` + `windowsHide` |
+| Windows | ✅ | `pnpm` goes through its `.cmd` shim via the shell (timed-out `shell` subprocesses kill the whole process tree with `taskkill /T /F`); restart is launched silently with PowerShell `-WindowStyle Hidden` + `windowsHide` |
 | Linux | ✅ | Falls back to `corepack pnpm` when pnpm is missing |
 | macOS | ✅ | Same as Linux |
 
 - Every path goes through `node:path`; no hard-coded separators
+- Port probing (for restart and detached background updates) checks both `127.0.0.1` and `::1`
 - On POSIX the restart uses `detached: true` so the new process becomes its own session — closing the terminal that launched it doesn't affect the service, and output is redirected to a log in tmpdir
 - Self-restart is disabled automatically under systemd (the supervisor takes care of it); unrecognized setups such as launchd are allowed by default
 
@@ -302,11 +307,11 @@ flowchart TD
 | The panel is stuck at "Checking version…" | A network problem. Switch the source to "Mirror" and retry; a failed check reports the direct and mirror errors separately in the message |
 | "An update is already running" (409) | The concurrency guard — wait for the current task to finish |
 | It reports a missing required path | That target tag would break the web UI (typically missing `ui-context-menu`). Choose another version, or click "Check out anyway" once you accept the risk |
-| Peer conflicts are listed for WorkBuddy and other plugins | Installed plugins pin harness / dsh to an older version. You can confirm and continue, or change `peerConflictPolicy` |
+| Peer conflicts are listed for WorkBuddy and other plugins | Counts only **enabled** plugins pinning harness / dsh to an older version (installed-but-disabled ones are ignored; alpha targets are matched against their stable version to avoid false positives). You can confirm and continue, or change `peerConflictPolicy` |
 | `MISSING_EXPORT` / it won't open after updating | A leftover `lib/` references an export that no longer exists. The plugin runs `pnpm run clean` and clears the `lib/` of vanished packages automatically; doing it by hand, remember `pnpm run clean && pnpm run build` |
 | `Failed to load plugins` / `did not activate` in the startup log | The plugin has already rolled back; reopen the panel once the page recovers to see the rollback result |
 | It still says "update available" after updating | A successful update refreshes the page automatically, and this doesn't happen after that refresh. A separate tab, or a panel opened before the refresh, stays on the old view — click "Check again" |
-| The button stays a green check and won't respond | Fixed in v1.9.0: a click in the `done` / `error` state returns it to `idle` and re-checks |
+| The button stays a green check and won't respond | Clicking in the `done` / `error` / `confirm` state returns it to `idle` and re-checks with the selected network source and proxy configuration; cancelling the interception card also restores the button |
 | The page didn't come back after updating | Wait a few seconds first: even if the build blanks the page and severs the SSE, the reloaded page still polls `/ping` (about twice a second) from the `localStorage` boot baseline. If the restart genuinely did not happen, the panel shows "Restart failed, please restart manually" — click "Restart now" beside it, or press F5 and start dsh yourself. Polling waits 90 seconds by default, then hands control back to you |
 
 ### Verifying the install
@@ -331,35 +336,36 @@ dsh plugin --profile web add link:$(pwd)
 ```
 
 ```
-lib/index.js                2487 lines  host side: API routes, update/rollback pipeline, stash, boot health check
-lib/client.js               2143 lines  browser side: sidebar button, popover, i18n (classic script, no build)
-lib/safety.js                657 lines  pure functions: tag comparison, peer conflicts, path whitelist, env cleanup
-test/update-safety.test.mjs  797 lines  35 tests
+lib/index.js                3021 lines  host side: API routes, update/rollback pipeline, stash, boot health check, HTTP CONNECT tunnel
+lib/client.js               2317 lines  browser side: sidebar button, popover, i18n (classic script, no build)
+lib/safety.js                696 lines  pure functions: tag comparison, peer conflicts, path whitelist, env cleanup
+test/update-safety.test.mjs 1778 lines  53 tests
 icon.svg                      18 lines  plugin icon (128 grid)
 ```
 
 ```bash
 node --test test/*.test.mjs
-# ℹ tests 35 · pass 35 · fail 0
+# ℹ tests 53 · pass 53 · fail 0
 ```
 
-The only skipped test is the one that has to create a symlink — without developer mode on Windows `symlinkSync` throws EPERM, so it was changed to probe for the capability and skip instead. It isn't broken.
+Note: `revision check and orphan lib deletion use a real git tree` requires creating a symlink — on Windows without Developer Mode enabled, `symlinkSync` throws `EPERM`, so it probes capability and skips automatically (52 pass / 1 skipped) rather than failing; with symlink permission or on Unix-like systems all 53 tests pass.
 
-6 of the 20 are **runtime behavior tests** — they really spawn git subprocesses and really run a rollback that is meant to fail — not regexes over source:
+Several of the 53 are **runtime behavior tests** — they spawn real git subprocesses, run a rollback meant to fail, spin up a local proxy to exercise the HTTP `CONNECT` tunnel, and verify SSE streams on Fetch routes — not regexes over source:
 
 ```
 runUpdateStreaming resolves and closes the stream on a non-git directory
-buildDoneEvent keeps autoRestart honest for both modes
-createProcessRunners streams a real git command and reports its exit code
+runUpdateStreaming with stash: true leaves existing stash@{0} untouched when working tree is clean
+handleRun handles "null" JSON body safely without locking the latch, and returns 413 for >64KiB body
 performRollback reports failure instead of throwing when it cannot restore
-sanitizeGitEnv strips every malformed GIT_CONFIG_* shape git rejects
 a git call survives a poisoned GIT_CONFIG_* environment
+fetchJson tunnels HTTPS through local HTTP CONNECT proxy (normal & chunked) and forwards HTTP GET
+/api/dsh-update/release-notes routes github+proxyPort through proxy and isolates error cache per proxyPort
 ```
 
 ### Hard constraints (read before touching the code)
 
 1. **`lib/client.js` has no build step** — it is a classic script registered through `window.__ModuleLoader__.load({ id, factory })`, and pulls in platform modules with `require("react")` internally. It can't become ESM/TS, can't use bare imports, and can't gain a bundler.
-2. **`lib/client.js` is CRLF with tab indentation** and holds about 185 `tr("中文原文")` dictionary entries. Editing it requires exact matching (including `\r\n`).
+2. **`lib/client.js` is CRLF with tab indentation** and holds **175** `tr("中文原文")` dictionary entries. Editing it requires exact matching (including `\r\n`).
 3. **React is limited to `useState / useEffect / useRef / useCallback` plus `createElement` (aliased `h`)** — no JSX.
 4. **Host-side routes must go through `ctx.connection.fetch.register`** so the host authenticates them. Do not fall back to a bare `webServer.register` + a hand-rolled loopback fence — that lets any web page open in the browser trigger an update. Keep the method whitelist and `requestBody` (`streaming` for `/run`) in sync with the handler.
 
@@ -382,7 +388,7 @@ Currently **v2.0.1**. See [CHANGELOG.en.md](CHANGELOG.en.md) for the full per-ve
 
 ## Privacy
 
-**This repo contains no local user data.** The source mentions only the public product name `deepseek-harness` and DSH's default port `3080` — no usernames, absolute working directories, credentials or tokens. The repo contains only `lib/`, `test/`, `docs/`, `package.json`, `cordis.patch.yml`, `icon.svg`, `README.md` / `README.en.md` / `README.ja.md`, `CHANGELOG.md` / `CHANGELOG.en.md` / `CHANGELOG.ja.md`, `LICENSE`.
+**This repo contains no local user data.** The source mentions only the public product name `deepseek-harness` and DSH's default port `3080` — no usernames, absolute working directories, credentials or tokens. The repo contains only `lib/`, `test/`, `docs/`, `package.json`, `cordis.patch.yml`, `icon.svg`, `screenshots.json`, `README.md` / `README.en.md` / `README.ja.md`, `CHANGELOG.md` / `CHANGELOG.en.md` / `CHANGELOG.ja.md`, `LICENSE`.
 
 ## License
 

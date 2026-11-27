@@ -21,7 +21,7 @@
     }
   },
   "peerDependencies": { "react": "^18.2.0" },
-  "files": ["lib/**/*.js", "cordis.patch.yml", "icon.svg", "docs/images/*.png", "CHANGELOG*.md"],
+  "files": ["lib/**/*.js", "cordis.patch.yml", "icon.svg", "screenshots.json", "docs/images/*.png", "CHANGELOG*.md"],
   "engines": { "node": ">=18", "dsh": ">=0.2.3-0" },
   "homepage": "https://github.com/Zhucy123/dsh-update",
   "repository": {

@@ -33,7 +33,7 @@
 
 ボタンはサイドバーの下部にあり、**幅は文字の長さに合わせて決まり**、行いっぱいには広がりません。同じ行の兄弟ボタンは高さが近ければ横に並び、差が大きければそれぞれ 1 行を占めます。下の図では Remote が 42px、このプラグインが 32px なので、それぞれ別の行になっています。
 
-<p align="left"><img src="docs/images/sidebar-layout-ja.png" width="258" alt="サイドバー下部：Remote と「アップデートを確認」は高さが違うため、それぞれ 1 行を占めている"></p>
+<p align="left"><img src="docs/images/sidebar-layout-ja.png" width="135" alt="サイドバー下部：Remote と「アップデートを確認」は高さが違うため、それぞれ 1 行を占めている"></p>
 
 ### アップデート確認パネル
 
@@ -41,7 +41,7 @@
 
 <table>
 <tr>
-<td><img src="docs/images/panel-ja.png" width="300" alt="アップデート確認パネル：ネットワーク経路、自動チェック、バージョン比較、他のバージョンへの切り替え"></td>
+<td><img src="docs/images/panel-ja.png" width="300" alt="アップデート確認パネル：ネットワーク経路、自動チェック、バージョン比較、古いバージョンへのロールバック"></td>
 <td><img src="docs/images/panel-en.png" width="300" alt="英語 UI"></td>
 </tr>
 <tr>
@@ -81,11 +81,11 @@
 
 | 経路 | 動作 |
 |---|---|
-| **自動**（デフォルト） | まず GitHub へ直接接続し、タイムアウト（8 秒）後はミラー一覧の順に再試行します。最初に成功したものを記憶します |
+| **自動**（デフォルト） | まず GitHub へ直接接続し、タイムアウト（8 秒）後は `gitProxy` とミラー一覧（`gh-proxy.com` / `ghproxy.net` / `ghfast.top`）を順に再試行し、最初に成功したミラーを記憶します |
 | **公式** | GitHub 直結のみ。ローカルプロキシのポート（Clash / V2Ray の 7890 など）を指定できます |
-| **ミラー** | `gh-proxy.com` / `ghproxy.net` / `ghfast.top` のいずれかを指定 |
+| **ミラー** | `gh-proxy.com` / `ghproxy.net` / `ghfast.top` のいずれかを指定。リポジトリの `origin` が GitHub でない場合は続行せず即座にエラーを返します |
 
-プロキシポートが空なら直接接続です。更新の実行時も選択した経路を使います。
+プロキシポートが空なら直接接続です。「公式 + ローカルプロキシポート」を選んだ場合は**全工程で有効**になり、バージョン確認（`git ls-remote`）や更新／切り戻し時の取得（`git fetch`）だけでなく、Node 標準の `node:http` / `node:tls` による HTTP `CONNECT` トンネルを通じて `/api/dsh-update/release-notes` のリリースノート取得にも適用されます。
 
 ### 自動チェック
 
@@ -133,7 +133,7 @@ pnpm install → pnpm run clean → pnpm run build
 | ゲート | 何を止めるか | 解除方法 |
 |---|---|---|
 | **必須パス** | 対象 tag に `packages/client/ui-context-menu/package.json`（`contextMenus` を提供）が無い——チェックアウトすると Web UI が `Failed to load plugins` で止まる | パネルの「それでもチェックアウト」を押す、`allowMissingRequiredPaths: true` を設定する、または `requiredPaths: []` でチェック自体を無効化 |
-| **Peer 競合** | 導入済みプラグインの harness / dsh `peerDependencies` が対象バージョンをカバーできない（WorkBuddy のようにバージョンを固定するもの） | デフォルトでは一覧を出して確認を求めます。`block` / `ignore` に変更できます |
+| **Peer 競合** | **有効化済み**プラグインの harness / dsh `peerDependencies` が対象バージョンをカバーできない（WorkBuddy のようにバージョンを固定するもの）。`dsh.profile.bundles` の有効なバンドルのみを走査し（シンボリックリンク / Junction 導入ディレクトリにも対応）、空白区切り演算子やハイフン範囲を含む標準 npm semver 範囲に対応。prerelease 対象は安定版でも二重確認して誤検知を防止 | デフォルトでは一覧を出して確認を求めます。`block` / `ignore` に変更できます |
 | **残留 lib/** | 旧バージョンで gitignore されていた `lib/` が、パッケージディレクトリごと新 tag に消された後もディスクに残る（典型例：古い `ui-context-menu/lib` が `contextMenus` を注入し続ける） | 自動処理：ホワイトリストのルート（`packages/`、`apps/`）配下で「旧ツリーにあり新ツリーに無い」パッケージの `lib/` だけを削除 |
 | **起動ログ** | ビルドは成功したのに、再起動後のログに `did not activate` / `Failed to load plugins` が出る | 自動ロールバック。手を出す必要はありません |
 
@@ -141,24 +141,19 @@ pnpm install → pnpm run clean → pnpm run build
 
 ### バージョン切り戻し
 
-戻したいときは「他のバージョンに切り替え」から過去の `dsh-v*` tag を選びます。同じドロップダウン、同じ流れを使い、ボタンの文言はバージョンの上下で自動的に変わります。
-
-```
-現在より新しい → このバージョンへ更新
-現在より古い   → このバージョンへ切り戻し
-どちらも同じ安全チェックを通ります
-```
+戻したいときはパネルの「または古いバージョンに戻す」から現在より古い `dsh-v*` tag を選びます。ボタンは「このバージョンにロールバック」で固定です。tag の比較と並び順では prerelease バージョン（`alpha.10` と `alpha.2` など）に完全な semver 数値比較を採用しています。バージョン一覧には過去のバージョンのみが並びます——アップグレードは上部の「更新を開始」が担当するため重複せず、「すでに最新です」のときもロールバック一覧だけが表示され、矛盾する選択肢は出ません。ロールバックも更新と同じ安全チェックを通ります。
 
 切り戻しに成功した場合も同様に自動再起動し、ページも自動で更新されるので手動操作は不要です。
 
-切り戻しがブロックされたとき（ローカル変更の衝突、対象バージョンに必須パスが無い、peer が非互換など）は、パネルに理由がそのまま並びます。どのファイルが衝突したか、どのプラグインが非互換か、どのパスが欠けているか、そしてどうすればよいかまで示されます。
+切り戻しが安全ゲートでブロックされたとき（ローカル変更の衝突、対象バージョンに必須パスが無い、peer が非互換など）は、確認カードに理由が並びます。どのファイルが衝突したか、どのプラグインが非互換か、どのパスが欠けているかが表示され、ボタンは「それでもロールバックする」になります。「それでも続行」を押すとそれまでの進捗を保ったまま続行し、「キャンセル」を押すとボタンは通常の状態に戻ります。競合の詳細はデフォルトで折りたたまれ、画面を埋め尽くしません。
 
 ### ローカルの変更は失われない
 
-- 更新前に `git stash push -u`（未追跡ファイルを含む）し、成功後にそのまま `stash apply` で戻します
-- 新バージョンが同じファイルに触れて衝突した場合、変更は**stash に安全に残ります**。パネルには「失われていません。リポジトリのディレクトリで手動で `git stash apply` できます」と明示されます
+- 自動 stash 前に `git status --porcelain` で変更有無を判定し、作業ツリーがクリーンなときは `git stash push` をスキップして既存の `stash@{0}` に誤って触れないようにします
+- 変更がある場合は更新前に `git stash push -u`（未追跡ファイルを含む）し、成功後にそのまま `stash apply` で戻します
+- 新バージョンが同じファイルに触れて `stash apply` で衝突した場合は、**stash エントリを破棄せず残したまま** `git reset --hard HEAD` で作業ツリーをクリーンに復旧してからビルドを続行し、パネルに「失われていません。リポジトリのディレクトリで手動で `git stash apply` できます」と明示します
 - パネルには「自動で stash して更新を続行 / 切り戻す」ボタンがあるので、自分でターミナルを開く必要はありません
-- ロールバックの前にも再度 `stash push -u` するので、ロールバックでユーザーの変更が消えることはありません
+- ロールバックの前にも `git status --porcelain` で確認し、変更がある場合のみ再度 `stash push -u` するので、ロールバックでユーザーの変更が消えることはありません
 
 ### 失敗時の自動ロールバック
 
@@ -173,6 +168,9 @@ pnpm install → pnpm run clean → pnpm run build
 - 同時に実行できる更新タスクは 1 つだけ。重複して起動すると 409 を返します
 - 5 つの API ルートはすべて DSH の**共有 `/api` 認証チャネル**(`ctx.connection.fetch.register`)に登録されます。ホストがプラグインに到達する前に Host/Origin 信頼フェンス(DNS rebinding / クロスオリジン対策)とブラウザのログインチェックを適用するため、ブラウザで開いている任意のウェブページから呼び出すことはできません。401/403 はプラグインではなくホストが返します
 - `/run` や `/restart` などシステムを変更するエンドポイントもログインで保護されます。プラグイン側はポリシーチェック(supervisor / `allowRestart` / 実行中タスク / ターゲットタグのホワイトリスト)のみを行います
+- `POST /api/dsh-update/run` はリクエストボディを 64 KiB 以下に制限（超過時は 413）し、解析結果が JSON オブジェクトであることを検証します
+- 会話実行中の警告から「強制更新」の二次確認へ進んでも、自動 stash（`stash`）などの選択はそのまま引き継がれます。`done` / `error` 状態でサイドバーボタンを押して再確認するときも選択済みのネットワーク経路・プロキシ設定を維持します
+- 再起動およびバックグラウンド更新のポート待ち受け確認では `127.0.0.1` と `::1`（IPv6 ループバック）の両方をチェックします
 - すべての git 呼び出しで `GIT_TERMINAL_PROMPT=0` を強制し、対話的に認証情報を求めることは決してありません
 - 切り戻し先は `dsh-v*` プレフィックスに限定し、任意の ref は拒否します
 - DSH `>=0.2.3`(アルファ含む)が必要です。共有 `/api` の准入モデルは 0.2.3 で安定しました。`engines.dsh: ">=0.2.3-0"` により `0.2.3-alpha.*` も満たします
@@ -287,11 +285,12 @@ flowchart TD
 
 | プラットフォーム | 状態 | 説明 |
 |---|---|---|
-| Windows | ✅ | `pnpm` はシェル経由で `.cmd` shim を実行。再起動は PowerShell の `-WindowStyle Hidden` + `windowsHide` で静かに起動 |
+| Windows | ✅ | `pnpm` はシェル経由で `.cmd` shim を実行（タイムアウト時は `taskkill /T /F` でプロセスツリー全体を終了）。再起動は PowerShell の `-WindowStyle Hidden` + `windowsHide` で静かに起動 |
 | Linux | ✅ | pnpm が無い場合は自動で `corepack pnpm` にフォールバック |
 | macOS | ✅ | Linux と同じ |
 
 - パスはすべて `node:path` を経由し、区切り文字をハードコードしません
+- ポート監視（再起動およびバックグラウンド更新）は `127.0.0.1` と `::1` の両方をチェックします
 - POSIX の再起動は `detached: true` で新プロセスを独立セッションにするため、起動元のターミナルを閉じてもサービスは止まりません。出力は tmpdir のログへリダイレクトされます
 - systemd 管理下では自己再起動を自動で無効化（起動は supervisor が担当）。launchd など未検出のケースはデフォルトで許可
 
@@ -308,11 +307,11 @@ flowchart TD
 | パネルが「バージョンを確認しています…」のまま | ネットワークの問題です。「ミラー」経路に切り替えて再試行してください。確認に失敗した場合は、直結とミラーそれぞれのエラーがメッセージに表示されます |
 | 「既に更新が実行中です」(409) と出る | 同時実行の保護です。現在のタスクが終わるのを待ってください |
 | 必須パスが欠けていると表示される | 対象 tag は Web UI を壊します（典型的には `ui-context-menu` の欠落）。別のバージョンに変えるか、リスクを確認したうえで「それでもチェックアウト」を押してください |
-| WorkBuddy などの peer 競合が一覧表示される | 導入済みプラグインが harness / dsh パッケージを旧バージョンに固定しています。確認すれば続行できますし、`peerConflictPolicy` の変更でも対処できます |
+| WorkBuddy などの peer 競合が一覧表示される | **有効化済み**プラグインが harness / dsh パッケージを旧バージョンに固定しているケースのみ集計します（インストール済み・無効のものは除外し、alpha 対象は安定版でも二重確認して誤検知を防ぎます）。確認すれば続行できますし、`peerConflictPolicy` の変更でも対処できます |
 | 更新後に `MISSING_EXPORT` / 開けない | 残留した古い `lib/` が削除済みのエクスポートを参照しています。プラグインは自動で `pnpm run clean` を実行し、消えたパッケージの `lib/` を掃除します。手動で行う場合は `pnpm run clean && pnpm run build` を忘れずに |
 | 起動ログに `Failed to load plugins` / `did not activate` が出る | プラグインが既に自動ロールバックしています。ページが戻ってからパネルを開き直すと、ロールバックの結果を確認できます |
 | 更新後も「更新あり」と表示される | 更新成功時はページが自動で更新されるので、更新後はこの問題は起きません。別タブの場合や、更新前に開いていたパネルは古い表示のまま残るので、「再確認」を押してください |
-| ボタンが緑のチェックマークのままで押せない | v1.9.0 で修正済みです。`done` / `error` 状態でクリックすると `idle` に戻って再確認します |
+| ボタンが緑のチェックマークのままで押せない | `done` / `error` / `confirm` 状態でクリックすると `idle` に戻り、選択済みのネットワーク経路・プロキシ設定を保ったまま再確認します。確認カードをキャンセルしても通常状態に戻ります |
 | 更新後にページが自動で戻ってこない | まず数秒お待ちください。ビルドでページが真っ白になり SSE が切れても、再読み込み後のページは `localStorage` の boot 基準から `/ping` を約 0.6 秒間隔で叩き続けます。本当に再起動していない場合はパネルに「再起動に失敗しました。手動で再起動してください」と出るので、隣の「今すぐ再起動」を押してください。F5 の後に手動で dsh を起動してもかまいません。ポーリングはデフォルトで 90 秒待ち、タイムアウトすると制御を返します |
 
 ### インストールの確認
@@ -337,33 +336,36 @@ dsh plugin --profile web add link:$(pwd)
 ```
 
 ```
-lib/index.js                2487 行  host 側：API ルート、更新／切り戻しのパイプライン、stash、起動ヘルスチェック
-lib/client.js               2143 行  ブラウザ側：サイドバーのボタン、ポップオーバー、i18n（classic script、ビルド無し）
-lib/safety.js                657 行  純粋関数：tag 比較、peer 競合、パスのホワイトリスト、環境のクリーンアップ
-test/update-safety.test.mjs  797 行  35 件のテスト
+lib/index.js                3021 行  host 側：API ルート、更新／切り戻しのパイプライン、stash、起動ヘルスチェック、HTTP CONNECT トンネル
+lib/client.js               2317 行  ブラウザ側：サイドバーのボタン、ポップオーバー、i18n（classic script、ビルド無し）
+lib/safety.js                696 行  純粋関数：tag 比較、peer 競合、パスのホワイトリスト、環境のクリーンアップ
+test/update-safety.test.mjs 1778 行  53 件のテスト
 icon.svg                      18 行  プラグインアイコン（128 グリッド）
 ```
 
 ```bash
 node --test test/*.test.mjs
-# ℹ tests 35 · pass 35 · fail 0
+# ℹ tests 53 · pass 53 · fail 0
 ```
 
-35 件のうち一部は**実行時の挙動テスト**（実際に git の子プロセスを起動し、必ず失敗するロールバックを本当に 1 回走らせる、Fetch route の SSE ストリーミングを実際に検証する など）で、ソースの正規表現だけではありません。
+なお、`revision check and orphan lib deletion use a real git tree` はシンボリックリンクの作成が必要なため、Windows で開発者モードが無効な環境では権限をプローブして自動スキップ（52 pass / 1 skipped）されます（故障ではありません）。権限が有効な環境や Unix 系環境では 53 件すべてが通過します。
+
+53 件のうち一部は**実行時の挙動テスト**（実際に git の子プロセスを起動し、必ず失敗するロールバックを走らせ、ローカルプロキシを立てて HTTP `CONNECT` トンネルや Fetch route の SSE ストリーミングを検証する など）で、ソースの正規表現だけではありません。
 
 ```
 runUpdateStreaming resolves and closes the stream on a non-git directory
-buildDoneEvent keeps autoRestart honest for both modes
-createProcessRunners streams a real git command and reports its exit code
+runUpdateStreaming with stash: true leaves existing stash@{0} untouched when working tree is clean
+handleRun handles "null" JSON body safely without locking the latch, and returns 413 for >64KiB body
 performRollback reports failure instead of throwing when it cannot restore
-sanitizeGitEnv strips every malformed GIT_CONFIG_* shape git rejects
 a git call survives a poisoned GIT_CONFIG_* environment
+fetchJson tunnels HTTPS through local HTTP CONNECT proxy (normal & chunked) and forwards HTTP GET
+/api/dsh-update/release-notes routes github+proxyPort through proxy and isolates error cache per proxyPort
 ```
 
 ### コード変更前に必読のハード制約
 
 1. **`lib/client.js` にビルド手順はありません**——classic script で、`window.__ModuleLoader__.load({ id, factory })` により登録され、内部で `require("react")` してプラットフォームのモジュールを取得します。ESM/TS に変えることはできず、裸の import もバンドラーも使えません。
-2. **`lib/client.js` は CRLF + タブインデント**で、約 185 個の `tr("中文原文")` 辞書項目を含みます。変更するときは完全一致（`\r\n` を含む）で行う必要があります。
+2. **`lib/client.js` は CRLF + タブインデント**で、**175** 個の `tr("中文原文")` 辞書項目を含みます。変更するときは完全一致（`\r\n` を含む）で行う必要があります。
 3. **React は `useState / useEffect / useRef / useCallback` + `createElement`（別名 `h`）だけ**を使い、JSX は使いません。
 4. **host 側のルートは必ず `ctx.connection.fetch.register` を使う**こと。ホストによる認証を受けます。裸の `webServer.register` + 自作 loopback fence に戻すと、ブラウザで開いている任意のページから更新を起動できてしまいます。メソッドのホワイトリストと `requestBody`(`/run` は `streaming`)はハンドラと一致させてください。
 
@@ -386,7 +388,7 @@ a git call survives a poisoned GIT_CONFIG_* environment
 
 ## プライバシー
 
-**本リポジトリにはユーザーのローカルデータは一切含まれません。** ソースに登場するのは公開製品名 `deepseek-harness` と DSH のデフォルトポート `3080` だけで、ユーザー名、絶対作業ディレクトリ、認証情報、トークンは含みません。リポジトリに含まれるのは `lib/`、`test/`、`docs/`、`package.json`、`cordis.patch.yml`、`icon.svg`、`README.md` / `README.en.md` / `README.ja.md`、`CHANGELOG.md` / `CHANGELOG.en.md` / `CHANGELOG.ja.md`、`LICENSE` のみです。
+**本リポジトリにはユーザーのローカルデータは一切含まれません。** ソースに登場するのは公開製品名 `deepseek-harness` と DSH のデフォルトポート `3080` だけで、ユーザー名、絶対作業ディレクトリ、認証情報、トークンは含みません。リポジトリに含まれるのは `lib/`、`test/`、`docs/`、`package.json`、`cordis.patch.yml`、`icon.svg`、`screenshots.json`、`README.md` / `README.en.md` / `README.ja.md`、`CHANGELOG.md` / `CHANGELOG.en.md` / `CHANGELOG.ja.md`、`LICENSE` のみです。
 
 ## License
 

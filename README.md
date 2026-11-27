@@ -33,7 +33,7 @@
 
 按钮在侧栏底部，**宽度跟着文字走**，不撑满整行。同一行里兄弟按钮高度接近就并排，差得多就自己占一行——下面这张图中 Remote 是 42px、我们是 32px，所以各占一行：
 
-<p align="left"><img src="docs/images/sidebar-layout-zh.png" width="246" alt="侧栏底部：Remote 与「检查更新」，两者高度不同，各占一行"></p>
+<p align="left"><img src="docs/images/sidebar-layout-zh.png" width="122" alt="侧栏底部：Remote 与「检查更新」，两者高度不同，各占一行"></p>
 
 ### 检查更新浮层
 
@@ -79,11 +79,11 @@
 
 | 来源 | 行为 |
 |---|---|
-| **自动**（默认） | 先直连 GitHub，超时（8 秒）后按镜像清单逐个重试，首个成功的记住 |
+| **自动**（默认） | 先直连 GitHub，超时（8 秒）后按 `gitProxy` 与镜像清单（`gh-proxy.com` / `ghproxy.net` / `ghfast.top`）逐个重试，并记住首个可用镜像 |
 | **官方** | 只走 GitHub 直连，可填本地代理端口（Clash / V2Ray 的 7890 之类） |
-| **镜像** | 指定用 `gh-proxy.com` / `ghproxy.net` / `ghfast.top` 之一 |
+| **镜像** | 指定用 `gh-proxy.com` / `ghproxy.net` / `ghfast.top` 之一；非 GitHub `origin` 选择该模式会立即报错提示，不会继续执行 |
 
-代理端口留空就是直连。执行更新时也走你选的这条链路。
+代理端口留空就是直连。选「官方 + 本地代理端口」时现在**全程生效**：不仅覆盖版本检查（`git ls-remote`）与更新/回退拉取（`git fetch`），也通过 Node 内置 `node:http` / `node:tls` 的 HTTP `CONNECT` 隧道覆盖 `/api/dsh-update/release-notes` 拉取 GitHub 发布说明。
 
 ### 自动检查
 
@@ -131,7 +131,7 @@ pnpm install → pnpm run clean → pnpm run build
 | 闸门 | 拦什么 | 怎么放开 |
 |---|---|---|
 | **必需路径** | 目标 tag 里没有 `packages/client/ui-context-menu/package.json`（提供 `contextMenus`）——检出后 Web UI 会停在 `Failed to load plugins` | 面板上点「仍要检出」，或设 `allowMissingRequiredPaths: true`；`requiredPaths: []` 直接关掉 |
-| **Peer 冲突** | **已启用**插件的 harness / dsh `peerDependencies` 罩不住目标版本（WorkBuddy 一类钉版本）。只扫 `dsh.profile.bundles` 里启用的插件；prerelease 目标按其稳定版匹配，避免 alpha 误报 | 默认列出后由你确认，可改 `block` / `ignore` |
+| **Peer 冲突** | **已启用**插件的 harness / dsh `peerDependencies` 罩不住目标版本（WorkBuddy 一类钉版本）。只扫 `dsh.profile.bundles` 里启用的插件（支持软链接 / Junction 安装的插件目录）；支持标准 npm semver 范围（含空白分隔操作符与连字符范围），prerelease 目标按其稳定版二次确认避免误报 | 默认列出后由你确认，可改 `block` / `ignore` |
 | **残留 lib/** | 旧版本 gitignore 的 `lib/` 在包目录被新 tag 删掉后仍留在磁盘（典型：旧 `ui-context-menu/lib` 继续注入 `contextMenus`） | 自动处理：只删白名单根目录（`packages/`、`apps/`）下「旧树有、新树没有」的包的 `lib/` |
 | **启动日志** | 构建成功但重启后日志出现 `did not activate` / `Failed to load plugins` | 自动回滚，不需要你干预 |
 
@@ -139,7 +139,7 @@ pnpm install → pnpm run clean → pnpm run build
 
 ### 版本回退
 
-想回退就在面板的「或回退到历史版本」里挑一个比当前旧的 `dsh-v*` tag，按钮固定显示「回退到此版本」。版本区只列历史版本——升级由顶部的「开始更新」负责，两者不重复；「已是最新」时也只有回退区，不会再出现自相矛盾的「更新到此版本」。回退和更新走同一套安全检查。
+想回退就在面板的「或回退到历史版本」里挑一个比当前旧的 `dsh-v*` tag，按钮固定显示「回退到此版本」。tag 比较与版本排序在 prerelease 版本号（如 `alpha.10` vs `alpha.2`）采用完整 semver 数值比较。版本区只列历史版本——升级由顶部的「开始更新」负责，两者不重复；「已是最新」时也只有回退区，不会再出现自相矛盾的「更新到此版本」。回退和更新走同一套安全检查。
 
 回退成功后同样自动重启、页面自动刷新，不需要手动操作。
 
@@ -147,10 +147,11 @@ pnpm install → pnpm run clean → pnpm run build
 
 ### 本地改动不会丢
 
-- 更新前 `git stash push -u`（含未跟踪文件），成功后原样 `stash apply` 回来
-- 新版本改到同一文件导致冲突时，改动**安全留在 stash**，面板明确提示「未丢失，可在仓库目录手动 `git stash apply`」
+- 自动暂存前先用 `git status --porcelain` 判空——工作树干净时不执行 `git stash push`，避免误动你原有的 `stash@{0}`
+- 有改动时在更新前 `git stash push -u`（含未跟踪文件），成功后原样 `stash apply` 回来
+- 新版本改到同一文件导致 `stash apply` 冲突时，**保留 stash 条目不丢弃**并用 `git reset --hard HEAD` 干净恢复工作树再继续构建，面板明确提示「未丢失，可在仓库目录手动 `git stash apply`」
 - 面板上有「自动暂存并继续更新 / 回退」按钮，不用自己开终端
-- 回滚前会重新 `stash push -u`，避免回滚把用户改动冲掉
+- 回滚前同样先用 `git status --porcelain` 检查并在有改动时重新 `stash push -u`，避免回滚把用户改动冲掉
 
 ### 失败自动回滚
 
@@ -165,6 +166,9 @@ pnpm install → pnpm run clean → pnpm run build
 - 同一时间只允许一个更新任务，重复触发返回 409
 - 5 个 API 路由全部注册在 DSH 的**共享 `/api` 鉴权通道**（`ctx.connection.fetch.register`）。宿主在请求到达插件前统一做 Host/Origin 信任栅栏（防 DNS rebinding / 跨域调用）与浏览器登录态校验——你在浏览器里打开的任何网页都无法再调用它们。返回 401/403 的是宿主，不是插件自己
 - `/run` / `/restart` 这类会真正改动系统的端点因此同样受登录态保护；插件侧只保留策略校验（supervisor / `allowRestart` / 进行中任务 / 目标 tag 白名单）
+- `POST /api/dsh-update/run` 限制请求体不超过 64 KiB（超限返回 413），并校验解析结果为 JSON 对象
+- 检测到「有对话正在进行」时，强制更新二次确认会完整保留用户的自动暂存（`stash`）等选项；在 `done` / `error` 态点击侧栏按钮重查也会沿用已选择的网络来源与代理配置
+- 重启与后台安装探测监听端口时同时检查 `127.0.0.1` 与 `::1`（IPv6 回环）
 - 所有 git 调用强制 `GIT_TERMINAL_PROMPT=0`，绝不交互式要凭据
 - 回退目标必须是 `dsh-v*` 前缀，拒绝任意 ref
 - 需要 DSH `>=0.2.3`（含 alpha），因为该版本起共享 `/api` 通道的准入模型才稳定；`engines.dsh: ">=0.2.3-0"` 覆盖 `0.2.3-alpha.*`
@@ -281,11 +285,12 @@ flowchart TD
 
 | 平台 | 状态 | 说明 |
 |---|---|---|
-| Windows | ✅ | `pnpm` 经 shell 走 `.cmd` shim；重启用 PowerShell `-WindowStyle Hidden` + `windowsHide` 静默拉起 |
+| Windows | ✅ | `pnpm` 经 shell 走 `.cmd` shim（超时用 `taskkill /T /F` 清理整个进程树）；重启用 PowerShell `-WindowStyle Hidden` + `windowsHide` 静默拉起 |
 | Linux | ✅ | 无 pnpm 时自动回退 `corepack pnpm` |
 | macOS | ✅ | 同 Linux |
 
 - 路径统一经 `node:path`，不写死分隔符
+- 端口探测（重启与后台更新）同时检查 `127.0.0.1` 与 `::1`
 - POSIX 重启用 `detached: true` 让新进程成为独立会话，关掉启动它的终端不影响服务，输出重定向到 tmpdir 日志
 - systemd 托管时自动禁用自重启（由 supervisor 负责拉起）；launchd 等未识别场景默认允许
 
@@ -306,7 +311,7 @@ flowchart TD
 | 更新后 `MISSING_EXPORT` / 打不开 | 旧残留 `lib/` 引用了已删除的导出。插件会自动 `pnpm run clean` 并清理已消失包的 `lib/`；手动操作时记得 `pnpm run clean && pnpm run build` |
 | 启动日志出现 `Failed to load plugins` / `did not activate` | 插件已经自动回滚了，页面恢复后重开面板能看到回滚结果 |
 | 更新完仍显示「有更新」 | 更新成功时页面会自动刷新，刷新后不会再有这个问题。若是另开的标签页或刷新前就开着的面板，会停在旧视图，点「重新检查」即可 |
-| 按钮一直是个绿勾、点不动 | `done` / `error` / `confirm`（待确认）态点击即回 `idle` 并重查；取消拦截卡片按钮也会恢复正常 |
+| 按钮一直是个绿勾、点不动 | `done` / `error` / `confirm`（待确认）态点击即回 `idle` 并按已选网络来源/代理配置重查；取消拦截卡片按钮也会恢复正常 |
 | 更新完页面没自己刷新回来 | 先等几秒：即使 build 阶段页面变空白、SSE 断开，页面重载后仍会靠 `localStorage` 里的 boot 基准补一次自动刷新（约 0.6 秒一轮）。若确实没重启，面板会显示「重启失败，请手动重启」，点「立即重启」；也可 F5 后手动起 dsh。轮询默认等 90 秒，超时交还给你 |
 
 ### 验证安装
@@ -331,33 +336,36 @@ dsh plugin --profile web add link:$(pwd)
 ```
 
 ```
-lib/index.js                2487 行  host 端：API 路由、更新/回退管线、stash、启动健康检查
-lib/client.js               2143 行  浏览器端：侧栏按钮、浮层、i18n（classic script，无构建）
-lib/safety.js                657 行  纯函数：tag 比较、peer 冲突、路径白名单、环境清理
-test/update-safety.test.mjs  797 行  35 条测试
+lib/index.js                3021 行  host 端：API 路由、更新/回退管线、stash、启动健康检查、HTTP CONNECT 代理隧道
+lib/client.js               2317 行  浏览器端：侧栏按钮、浮层、i18n（classic script，无构建）
+lib/safety.js                696 行  纯函数：tag 比较、peer 冲突、路径白名单、环境清理
+test/update-safety.test.mjs 1778 行  53 条测试
 icon.svg                      18 行  插件图标（128 网格）
 ```
 
 ```bash
 node --test test/*.test.mjs
-# ℹ tests 35 · pass 35 · fail 0
+# ℹ tests 53 · pass 53 · fail 0
 ```
 
-35 条里有若干条是**运行时行为测试**（真的起 git 子进程、真的跑一次注定失败的回滚、真的验证 Fetch route 的 SSE 流），不只是源码正则：
+其中 `revision check and orphan lib deletion use a real git tree` 这条用例需要创建符号链接——在未开启开发者模式的 Windows 上因无 symlink 权限会通过能力探测自动 skip（此时为 52 pass / 1 skipped），并非用例损坏；开启权限或类 Unix 环境实测为 53 条全部通过。
+
+53 条里有若干条是**运行时行为测试**（真的起 git 子进程、真的跑一次注定失败的回滚、真的起本地代理验证 HTTP `CONNECT` 隧道与 Fetch route 的 SSE 流），不只是源码正则：
 
 ```
 runUpdateStreaming resolves and closes the stream on a non-git directory
-buildDoneEvent keeps autoRestart honest for both modes
-createProcessRunners streams a real git command and reports its exit code
+runUpdateStreaming with stash: true leaves existing stash@{0} untouched when working tree is clean
+handleRun handles "null" JSON body safely without locking the latch, and returns 413 for >64KiB body
 performRollback reports failure instead of throwing when it cannot restore
-sanitizeGitEnv strips every malformed GIT_CONFIG_* shape git rejects
 a git call survives a poisoned GIT_CONFIG_* environment
+fetchJson tunnels HTTPS through local HTTP CONNECT proxy (normal & chunked) and forwards HTTP GET
+/api/dsh-update/release-notes routes github+proxyPort through proxy and isolates error cache per proxyPort
 ```
 
 ### 几条硬约束（改代码前必读）
 
 1. **`lib/client.js` 没有构建步骤**——是 classic script，靠 `window.__ModuleLoader__.load({ id, factory })` 注册，内部 `require("react")` 拿平台模块。不能改成 ESM/TS、不能裸 import、不能加打包工具。
-2. **`lib/client.js` 是 CRLF + tab 缩进**，含约 185 条 `tr("中文原文")` 字典项。改它必须用精确匹配（含 `\r\n`）。
+2. **`lib/client.js` 是 CRLF + tab 缩进**，含 **175** 条 `tr("中文原文")` 字典项。改它必须用精确匹配（含 `\r\n`）。
 3. **React 只用 `useState / useEffect / useRef / useCallback` + `createElement`（别名 `h`）**，无 JSX。
 4. **host 端路由必须走 `ctx.connection.fetch.register`**，由宿主统一鉴权；不要再退回裸 `webServer.register` + 自写 loopback fence——那会让浏览器里打开的任意网页都能触发更新。端点方法白名单与 `requestBody`（`/run` 为 `streaming`）要保持和 handler 一致。
 
@@ -380,7 +388,7 @@ a git call survives a poisoned GIT_CONFIG_* environment
 
 ## 隐私
 
-**本仓库不包含任何用户本地数据。** 源码里只出现公开产品名 `deepseek-harness` 与 DSH 默认端口 `3080`，没有用户名、绝对工作目录、凭证或 token。仓库只含 `lib/`、`test/`、`docs/`、`package.json`、`cordis.patch.yml`、`icon.svg`、`README.md` / `README.en.md` / `README.ja.md`、`CHANGELOG.md` / `CHANGELOG.en.md` / `CHANGELOG.ja.md`、`LICENSE`。
+**本仓库不包含任何用户本地数据。** 源码里只出现公开产品名 `deepseek-harness` 与 DSH 默认端口 `3080`，没有用户名、绝对工作目录、凭证或 token。仓库只含 `lib/`、`test/`、`docs/`、`package.json`、`cordis.patch.yml`、`icon.svg`、`screenshots.json`、`README.md` / `README.en.md` / `README.ja.md`、`CHANGELOG.md` / `CHANGELOG.en.md` / `CHANGELOG.ja.md`、`LICENSE`。
 
 ## License
 
