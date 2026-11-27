@@ -64,7 +64,7 @@
 
 ### 3種類のネットワーク経路
 
-パネル上部で経路をその場で切り替えられ、選択は `localStorage` に保存されます。
+パネル上部で経路をその場で切り替えられ、選択(公式モードのプロキシポートやミラー id を含む)はブラウザの `localStorage` に保存され、次回パネルを開くときに自動復元されます。毎回選び直す必要はありません。
 
 | 経路 | 動作 |
 |---|---|
@@ -154,10 +154,11 @@ pnpm install → pnpm run clean → pnpm run build
 ### 同時実行と安全境界
 
 - 同時に実行できる更新タスクは 1 つだけ。重複して起動すると 409 を返します
-- 5 つの API ルートはいずれもローカルからのリクエストだけを受け付け、LAN やスマートフォンからのアクセスは一律 403 です
-- `/restart` はさらに厳格で、`x-forwarded-for` などのプロキシヘッダーを拒否し、Origin は Host と完全一致していなければなりません
+- 5 つの API ルートはすべて DSH の**共有 `/api` 認証チャネル**(`ctx.connection.fetch.register`)に登録されます。ホストがプラグインに到達する前に Host/Origin 信頼フェンス(DNS rebinding / クロスオリジン対策)とブラウザのログインチェックを適用するため、ブラウザで開いている任意のウェブページから呼び出すことはできません。401/403 はプラグインではなくホストが返します
+- `/run` や `/restart` などシステムを変更するエンドポイントもログインで保護されます。プラグイン側はポリシーチェック(supervisor / `allowRestart` / 実行中タスク / ターゲットタグのホワイトリスト)のみを行います
 - すべての git 呼び出しで `GIT_TERMINAL_PROMPT=0` を強制し、対話的に認証情報を求めることは決してありません
 - 切り戻し先は `dsh-v*` プレフィックスに限定し、任意の ref は拒否します
+- DSH `>=0.2.3`(アルファ含む)が必要です。共有 `/api` の准入モデルは 0.2.3 で安定しました。`engines.dsh: ">=0.2.3-0"` により `0.2.3-alpha.*` も満たします
 
 ## インストール
 
@@ -319,21 +320,19 @@ dsh plugin --profile web add link:$(pwd)
 ```
 
 ```
-lib/index.js                2328 行  host 側：API ルート、更新／切り戻しのパイプライン、stash、起動ヘルスチェック
-lib/client.js               2250 行  ブラウザ側：サイドバーのボタン、ポップオーバー、i18n（classic script、ビルド無し）
-lib/safety.js                592 行  純粋関数：tag 比較、peer 競合、パスのホワイトリスト、環境のクリーンアップ
-test/update-safety.test.mjs  477 行  20 件のテスト
+lib/index.js                2487 行  host 側：API ルート、更新／切り戻しのパイプライン、stash、起動ヘルスチェック
+lib/client.js               2143 行  ブラウザ側：サイドバーのボタン、ポップオーバー、i18n（classic script、ビルド無し）
+lib/safety.js                657 行  純粋関数：tag 比較、peer 競合、パスのホワイトリスト、環境のクリーンアップ
+test/update-safety.test.mjs  797 行  35 件のテスト
 icon.svg                      18 行  プラグインアイコン（128 グリッド）
 ```
 
 ```bash
 node --test test/*.test.mjs
-# ℹ tests 20 · pass 19 · fail 0 · skip 1
+# ℹ tests 35 · pass 35 · fail 0
 ```
 
-唯一 skip されるのはシンボリックリンクの作成が必要なケースです。Windows で開発者モードが有効になっていないと `symlinkSync` が EPERM を投げるため、機能検出してから skip するように変更してあり、壊れているわけではありません。
-
-20 件のうち 6 件は**実行時の挙動テスト**（実際に git の子プロセスを起動し、必ず失敗するロールバックを本当に 1 回走らせる）で、ソースの正規表現ではありません。
+35 件のうち一部は**実行時の挙動テスト**（実際に git の子プロセスを起動し、必ず失敗するロールバックを本当に 1 回走らせる、Fetch route の SSE ストリーミングを実際に検証する など）で、ソースの正規表現だけではありません。
 
 ```
 runUpdateStreaming resolves and closes the stream on a non-git directory
@@ -349,7 +348,7 @@ a git call survives a poisoned GIT_CONFIG_* environment
 1. **`lib/client.js` にビルド手順はありません**——classic script で、`window.__ModuleLoader__.load({ id, factory })` により登録され、内部で `require("react")` してプラットフォームのモジュールを取得します。ESM/TS に変えることはできず、裸の import もバンドラーも使えません。
 2. **`lib/client.js` は CRLF + タブインデント**で、約 185 個の `tr("中文原文")` 辞書項目を含みます。変更するときは完全一致（`\r\n` を含む）で行う必要があります。
 3. **React は `useState / useEffect / useRef / useCallback` + `createElement`（別名 `h`）だけ**を使い、JSX は使いません。
-4. **host 側のルートはすべて loopback-only**です。これは意図的な安全境界なので、「テストしやすいから」といって緩めてはいけません。
+4. **host 側のルートは必ず `ctx.connection.fetch.register` を使う**こと。ホストによる認証を受けます。裸の `webServer.register` + 自作 loopback fence に戻すと、ブラウザで開いている任意のページから更新を起動できてしまいます。メソッドのホワイトリストと `requestBody`(`/run` は `streaming`)はハンドラと一致させてください。
 
 ### 2種類の変更と2通りの反映方法
 

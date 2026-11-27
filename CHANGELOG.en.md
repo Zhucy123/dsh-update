@@ -6,7 +6,30 @@ This plugin follows [semver](https://semver.org/) and is independent of DSH's `d
 
 > **npm package name**: `@zhucy123/dsh-update` (when it was published on 2026-09-02, the bare name `dsh-update` had already been registered by a third party as a 1.3KB placeholder shell package, so the scoped name was adopted; the plugin ID and the `/api/dsh-update/*` route prefix are still `dsh-update`, and the historical command in the v1.2.0 entry below is for illustration only).
 
-## v2.0.0 (current)
+## v2.0.1 (current)
+
+### Security fix
+
+- **All 5 API routes now go through DSH's admission check**: migrated from bare `webServer.register` to `ctx.connection.fetch.register`. The host applies its Host/Origin trust fence (anti DNS-rebinding / cross-origin) and browser login check before a request reaches the plugin, so no web page open in your browser can call `/run`, `/restart`, etc. to trigger a real update. The plugin's own hand-rolled loopback/Origin fences were removed — authentication now lives in one place. The SSE progress stream is adapted via `ReadableStream`; progress output and rollback logic are unchanged
+- **`engines.dsh` constrained to `>=0.2.3-0`**: the shared `/api` admission model stabilised in 0.2.3; the `-0` suffix lets `0.2.3-alpha.*` satisfy it (so `0.2.3-alpha.2`, the newest locally installable version, is not rejected as incompatible)
+- `inject` now includes `connection`; README's old "local requests only" wording updated in all three languages
+
+### UI improvements
+
+- **Renamed “View release notes” to “View official release notes”**: the panel already shows this release's GitHub Releases notes inline, so the button that opens a new tab now clearly points at the official release page instead of being confused with the live progress log (all three locales)
+- **Progress popover can be reopened during an update**: the trigger used to be disabled while updating, so once the panel auto-collapsed there was no way to see live progress again. Now clicking it while running reopens the same popover and the `updating` view keeps streaming its line-by-line log (auto-scroll to bottom, pauses when you scroll up). Closing the popover only hides it — it does not cancel the stream (`runToken` is not advanced while running), so you can reopen and keep watching
+- **Network source choice is remembered**: picking “official” with a proxy port (e.g. 7890) or a specific mirror now persists in browser `localStorage`, so the next panel open restores the last source / port / mirror instead of resetting to “auto”. The stored value is validated on read (port range, mirror id), so stale or hand-edited data falls back to “auto” rather than sending a bad port to `/run`
+- **Rollback now behaves like an update**: clicking “roll back to this version” closes the panel immediately and the sidebar button becomes a live progress bar; clicking it opens a **minimal progress window** (just the current stage + line-by-line log — no title, source picker, auto-check or long yellow warnings); completion turns the button green with a check mark and — just like a successful update — it polls `/ping` to detect the new process and reloads the page automatically
+- **Version picker is now rollback-only**: with a new version found, the top already has “start update” while the lower version list defaulted to the latest tag with an “update to this version” button — redundant; and when already up to date it still offered “update to this version”, which is self-contradictory. In both states the lower list now only offers tags older than local, titled “Or roll back to an older version” with a fixed “roll back to this version” button — upgrades and rollbacks are cleanly separated
+- **Fixed the page not auto-reloading after an update/rollback**: the build step replaces web assets, blanking the page and severing the SSE before the `autoRestart` done event arrives — so the old done-driven refresh never fired (leaving manual refresh or DSH's native “server version changed” dialog as the only options). The current boot id is now written to `localStorage` when a task starts; on page (re)load an independent `/ping` poll detects a changed boot id and reloads automatically — no SSE needed. The marker expires after 10 minutes, polling is idempotent, and it is cleared on failure/interception/skip
+- **More accurate peer-conflict warnings**: (1) prerelease targets (e.g. `0.2.3-alpha.1`) are matched against ranges by their stable core `0.2.3`, removing false positives (e.g. `>=0.1.7-rc.1 <0.3.0-0` clearly covers the alpha but used to be flagged); (2) only **enabled** plugins (`dsh.profile.bundles`) are scanned — installed-but-disabled ones no longer count; (3) conflict details are collapsed and no longer printed twice; (4) the rollback interception button says “roll back anyway”, cancelling restores the button, and continuing keeps progress instead of restarting
+- **Fixed rollback “failing / stuck at pull 12%”**: the real cause was a peerDependency conflict — the older harness tag cannot satisfy the versions pinned by installed plugins (e.g. WorkBuddy), so the server correctly emitted a `peers` interception awaiting confirmation. But the panel was closed when execution started, hiding the interception card, so the user only saw the button stuck at a percentage. Now all three safety gates (peer conflict / missing required paths / local-change conflict) **reopen the panel** and show their confirm buttons, while the button leaves the progress state and switches to a distinct “confirmation needed” look (“Needs confirmation” when narrow) instead of wrongly showing “update failed, retry”. Rollbacks also no longer have their chosen tag overwritten by the post-fetch “recompute latest / skip if up-to-date” logic
+
+### Refactor
+
+- Removed dead code left behind after the rollback entry moved into the panel: the whole standalone “rollback version” button state machine, `RollbackPopover`, `describeRollbackBlocked` and their dictionary entries, plus the unused `webServer` inject and adapter methods on the host side. No behaviour change; client.js shrank from 2405 to 2081 lines
+
+## v2.0.0
 
 This release (**sidebar button reworked + tri-lingual UI + selectable network source + a batch of bugs that would bite fixed**). Compared with v1.8.0:
 

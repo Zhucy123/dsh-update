@@ -64,7 +64,7 @@ Reads the `dsh-v*` release tags on origin with `git ls-remote` and compares them
 
 ### Three network sources
 
-The top of the popover lets you switch the connection path on the fly; the choice is stored in `localStorage`:
+The top of the popover lets you switch the connection path on the fly; the choice (including the official mode's proxy port and the mirror id) is stored in browser `localStorage` and restored the next time you open the panel — no need to pick again:
 
 | Source | Behavior |
 |---|---|
@@ -124,17 +124,11 @@ A failing `pnpm run clean` aborts and rolls back the same way — it is never tr
 
 ### Rolling back
 
-To go back, pick a historical `dsh-v*` tag under "Switch to another version". Same dropdown, same pipeline; the button label follows whether the version is higher or lower:
-
-```
-higher than current → update to this version
-lower than current  → roll back to this version
-both go through the same safety checks
-```
+To go back, pick an older `dsh-v*` tag under "Or roll back to an older version"; the button always says "roll back to this version". The version list only contains tags older than current — upgrades are handled by the top-level "start update" button, so there is no duplication, and an up-to-date view has no contradictory "update to this version" option. Rollbacks go through the same safety checks as updates.
 
 A successful rollback also restarts automatically and refreshes the page, with nothing to do by hand.
 
-When a rollback is blocked (conflicting local changes, a target missing a required path, incompatible peers), the popover lists the reason directly: which files conflict, which plugin is incompatible, which path is missing — and what to do about it.
+When a rollback is blocked by a safety gate (conflicting local changes, a target missing a required path, incompatible peers), a confirmation card lists the reason: which files conflict, which plugin is incompatible, which path is missing — with a "roll back anyway" button. Confirming keeps the progress you already made; cancelling restores the button to normal. Conflict details are collapsed by default instead of flooding the panel.
 
 ### Your local changes are never lost
 
@@ -154,10 +148,11 @@ Chinese / English / Japanese. The language is resolved in order from `ctx.locale
 ### Concurrency and security boundaries
 
 - Only one update task at a time; a duplicate trigger returns 409
-- All 5 API routes accept local requests only — LAN and phone origins get 403
-- `/restart` validates more strictly: proxy headers such as `x-forwarded-for` are rejected, and Origin must match Host exactly
+- All 5 API routes are mounted on DSH's **shared authenticated `/api` channel** (`ctx.connection.fetch.register`). The host applies its Host/Origin trust fence (anti DNS-rebinding / cross-origin) and browser login check before a request reaches the plugin — no web page open in your browser can call them. The 401/403 comes from the host, not the plugin
+- System-mutating endpoints such as `/run` and `/restart` are therefore login-gated; the plugin keeps only policy checks (supervisor / `allowRestart` / in-flight task / target-tag whitelist)
 - Every git invocation forces `GIT_TERMINAL_PROMPT=0`; credentials are never requested interactively
 - Rollback targets must carry the `dsh-v*` prefix — arbitrary refs are rejected
+- Requires DSH `>=0.2.3` (alphas included); the shared `/api` admission model stabilised in 0.2.3. `engines.dsh: ">=0.2.3-0"` lets `0.2.3-alpha.*` satisfy it
 
 ## Installation
 
@@ -319,16 +314,16 @@ dsh plugin --profile web add link:$(pwd)
 ```
 
 ```
-lib/index.js                2328 lines  host side: API routes, update/rollback pipeline, stash, boot health check
-lib/client.js               2250 lines  browser side: sidebar button, popover, i18n (classic script, no build)
-lib/safety.js                592 lines  pure functions: tag comparison, peer conflicts, path whitelist, env cleanup
-test/update-safety.test.mjs  477 lines  20 tests
+lib/index.js                2487 lines  host side: API routes, update/rollback pipeline, stash, boot health check
+lib/client.js               2143 lines  browser side: sidebar button, popover, i18n (classic script, no build)
+lib/safety.js                657 lines  pure functions: tag comparison, peer conflicts, path whitelist, env cleanup
+test/update-safety.test.mjs  797 lines  35 tests
 icon.svg                      18 lines  plugin icon (128 grid)
 ```
 
 ```bash
 node --test test/*.test.mjs
-# ℹ tests 20 · pass 19 · fail 0 · skip 1
+# ℹ tests 35 · pass 35 · fail 0
 ```
 
 The only skipped test is the one that has to create a symlink — without developer mode on Windows `symlinkSync` throws EPERM, so it was changed to probe for the capability and skip instead. It isn't broken.
@@ -349,7 +344,7 @@ a git call survives a poisoned GIT_CONFIG_* environment
 1. **`lib/client.js` has no build step** — it is a classic script registered through `window.__ModuleLoader__.load({ id, factory })`, and pulls in platform modules with `require("react")` internally. It can't become ESM/TS, can't use bare imports, and can't gain a bundler.
 2. **`lib/client.js` is CRLF with tab indentation** and holds about 185 `tr("中文原文")` dictionary entries. Editing it requires exact matching (including `\r\n`).
 3. **React is limited to `useState / useEffect / useRef / useCallback` plus `createElement` (aliased `h`)** — no JSX.
-4. **All host-side routes are loopback-only.** That is a deliberate security boundary — don't open it up "to make testing easier".
+4. **Host-side routes must go through `ctx.connection.fetch.register`** so the host authenticates them. Do not fall back to a bare `webServer.register` + a hand-rolled loopback fence — that lets any web page open in the browser trigger an update. Keep the method whitelist and `requestBody` (`streaming` for `/run`) in sync with the handler.
 
 ### Two kinds of change, two ways to take effect
 

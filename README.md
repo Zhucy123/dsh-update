@@ -41,7 +41,7 @@
 
 <table>
 <tr>
-<td><img src="docs/images/panel-zh.png" width="300" alt="检查更新浮层：网络来源、自动检查、版本对比、切换到其它版本"></td>
+<td><img src="docs/images/panel-zh.png" width="300" alt="检查更新浮层：网络来源、自动检查、版本对比、回退到历史版本"></td>
 <td><img src="docs/images/panel-en.png" width="300" alt="English 界面"></td>
 </tr>
 <tr>
@@ -64,7 +64,7 @@
 
 ### 三种网络来源
 
-浮层顶部可以直接换链路，选择记在 `localStorage` 里：
+浮层顶部可以直接换链路，选择（含官方模式的代理端口、镜像 id）记在浏览器 `localStorage` 里，下次打开面板自动恢复，不用每次重选：
 
 | 来源 | 行为 |
 |---|---|
@@ -100,7 +100,7 @@ pnpm install → pnpm run clean → pnpm run build
 
 构建成功后 dsh 会自动重启（完成提示里是真实倒计时，约 2 秒），页面不用你手动刷新，也不用盯终端：
 
-插件先记住当前进程的 `boot` id，然后每 1.5 秒请求一次 `/api/dsh-update/ping`。看到 `boot` 变了就说明新进程已经绑上端口，这时才 `location.reload()`。
+插件先记住当前进程的 `boot` id，然后每 1.5 秒请求一次 `/api/dsh-update/ping`。看到 `boot` 变了就说明新进程已经绑上端口，这时才 `location.reload()`。这个 `boot` 基准还会写进浏览器 `localStorage`——即使 build 阶段替换网页资源导致页面变空白、SSE 连接断开，页面重新加载时也会独立轮询 `/ping` 感知新进程并补上刷新，不依赖那条可能断开的 SSE。
 
 之所以不直接刷新：旧进程退出、新进程还没监听端口之间有一段空窗，立刻 reload 只会撞上「无法访问此网站」。等新进程确认就绪再刷新，页面是直接回到正常界面的。
 
@@ -116,7 +116,7 @@ pnpm install → pnpm run clean → pnpm run build
 | 闸门 | 拦什么 | 怎么放开 |
 |---|---|---|
 | **必需路径** | 目标 tag 里没有 `packages/client/ui-context-menu/package.json`（提供 `contextMenus`）——检出后 Web UI 会停在 `Failed to load plugins` | 面板上点「仍要检出」，或设 `allowMissingRequiredPaths: true`；`requiredPaths: []` 直接关掉 |
-| **Peer 冲突** | 已装插件的 harness / dsh `peerDependencies` 罩不住目标版本（WorkBuddy 一类钉版本） | 默认列出后由你确认，可改 `block` / `ignore` |
+| **Peer 冲突** | **已启用**插件的 harness / dsh `peerDependencies` 罩不住目标版本（WorkBuddy 一类钉版本）。只扫 `dsh.profile.bundles` 里启用的插件；prerelease 目标按其稳定版匹配，避免 alpha 误报 | 默认列出后由你确认，可改 `block` / `ignore` |
 | **残留 lib/** | 旧版本 gitignore 的 `lib/` 在包目录被新 tag 删掉后仍留在磁盘（典型：旧 `ui-context-menu/lib` 继续注入 `contextMenus`） | 自动处理：只删白名单根目录（`packages/`、`apps/`）下「旧树有、新树没有」的包的 `lib/` |
 | **启动日志** | 构建成功但重启后日志出现 `did not activate` / `Failed to load plugins` | 自动回滚，不需要你干预 |
 
@@ -124,17 +124,11 @@ pnpm install → pnpm run clean → pnpm run build
 
 ### 版本回退
 
-想回退就在「切换到其它版本」里挑一个历史 `dsh-v*` tag。用的是同一个下拉、同一套流程，按钮文字按版本高低自动变：
-
-```
-高于当前版本 → 更新到此版本
-低于当前版本 → 回退到此版本
-两者都走同一套安全检查
-```
+想回退就在面板的「或回退到历史版本」里挑一个比当前旧的 `dsh-v*` tag，按钮固定显示「回退到此版本」。版本区只列历史版本——升级由顶部的「开始更新」负责，两者不重复；「已是最新」时也只有回退区，不会再出现自相矛盾的「更新到此版本」。回退和更新走同一套安全检查。
 
 回退成功后同样自动重启、页面自动刷新，不需要手动操作。
 
-回退被挡住时（本地改动冲突、目标版本缺必需路径、peer 不兼容），浮层会直接列出原因：哪些文件冲突、哪个插件不兼容、缺哪条路径，并告诉你该怎么办。
+回退被安全闸门挡住时（本地改动冲突、目标版本缺必需路径、peer 不兼容），浮层会弹出确认卡片列出原因：哪些文件冲突、哪个插件不兼容、缺哪条路径，按钮显示「仍要继续回退」。点「仍要继续」会保留已走过的进度接着跑；点「取消」按钮恢复正常状态。冲突详情默认折叠，不再刷屏。
 
 ### 本地改动不会丢
 
@@ -154,10 +148,11 @@ pnpm install → pnpm run clean → pnpm run build
 ### 并发与安全边界
 
 - 同一时间只允许一个更新任务，重复触发返回 409
-- 5 个 API 路由全部只接受本机请求，局域网和手机来源一律 403
-- `/restart` 用更严格的校验：拒绝 `x-forwarded-for` 等代理头，Origin 必须与 Host 精确一致
+- 5 个 API 路由全部注册在 DSH 的**共享 `/api` 鉴权通道**（`ctx.connection.fetch.register`）。宿主在请求到达插件前统一做 Host/Origin 信任栅栏（防 DNS rebinding / 跨域调用）与浏览器登录态校验——你在浏览器里打开的任何网页都无法再调用它们。返回 401/403 的是宿主，不是插件自己
+- `/run` / `/restart` 这类会真正改动系统的端点因此同样受登录态保护；插件侧只保留策略校验（supervisor / `allowRestart` / 进行中任务 / 目标 tag 白名单）
 - 所有 git 调用强制 `GIT_TERMINAL_PROMPT=0`，绝不交互式要凭据
 - 回退目标必须是 `dsh-v*` 前缀，拒绝任意 ref
+- 需要 DSH `>=0.2.3`（含 alpha），因为该版本起共享 `/api` 通道的准入模型才稳定；`engines.dsh: ">=0.2.3-0"` 覆盖 `0.2.3-alpha.*`
 
 ## 安装
 
@@ -257,6 +252,8 @@ flowchart TD
 
 ### API 路由
 
+以下路由均注册在 DSH 共享 `/api` 鉴权通道，由宿主统一做信任栅栏与登录态校验，插件本身不接受匿名请求。
+
 | 路由 | 方法 | 说明 |
 |---|---|---|
 | `/api/dsh-update/status` | GET | 版本对比 + 本地历史 tag 列表；`?source=&mirror=&proxyPort=` 可按当前网络来源重查 |
@@ -290,12 +287,12 @@ flowchart TD
 | 面板一直停在「正在检查版本…」 | 网络问题。换到「镜像」来源再试；检查失败会在提示里给出直连与镜像各自的错误 |
 | 提示「已有更新正在执行中」(409) | 并发保护，等当前任务结束 |
 | 提示缺少必需路径 | 目标 tag 会损坏 Web UI（典型缺 `ui-context-menu`）。换一个版本，或确认风险后点「仍要检出」 |
-| 列出 WorkBuddy 等插件的 peer 冲突 | 已装插件把 harness / dsh 包钉在旧版本。确认后仍可继续，或改 `peerConflictPolicy` |
+| 列出 WorkBuddy 等插件的 peer 冲突 | 只统计**已启用**插件把 harness / dsh 包钉在旧版本的情况（已装未启用的不算；alpha 目标按稳定版匹配，避免误报）。确认后仍可继续，或改 `peerConflictPolicy` |
 | 更新后 `MISSING_EXPORT` / 打不开 | 旧残留 `lib/` 引用了已删除的导出。插件会自动 `pnpm run clean` 并清理已消失包的 `lib/`；手动操作时记得 `pnpm run clean && pnpm run build` |
 | 启动日志出现 `Failed to load plugins` / `did not activate` | 插件已经自动回滚了，页面恢复后重开面板能看到回滚结果 |
 | 更新完仍显示「有更新」 | 更新成功时页面会自动刷新，刷新后不会再有这个问题。若是另开的标签页或刷新前就开着的面板，会停在旧视图，点「重新检查」即可 |
-| 按钮一直是个绿勾、点不动 | v1.9.0 起修掉了：`done` / `error` 态点击即回 `idle` 并重查 |
-| 更新完页面没自己刷新回来 | 说明自动重启没生效。面板会显示「重启失败，请手动重启」，点旁边的「立即重启」；也可以 F5 后手动起 dsh。轮询默认等 90 秒，超时就交还给你 |
+| 按钮一直是个绿勾、点不动 | `done` / `error` / `confirm`（待确认）态点击即回 `idle` 并重查；取消拦截卡片按钮也会恢复正常 |
+| 更新完页面没自己刷新回来 | 先等几秒：即使 build 阶段页面变空白、SSE 断开，页面重载后仍会靠 `localStorage` 里的 boot 基准补一次自动刷新。若确实没重启，面板会显示「重启失败，请手动重启」，点「立即重启」；也可 F5 后手动起 dsh。轮询默认等 90 秒，超时交还给你 |
 
 ### 验证安装
 
@@ -319,21 +316,19 @@ dsh plugin --profile web add link:$(pwd)
 ```
 
 ```
-lib/index.js                2328 行  host 端：API 路由、更新/回退管线、stash、启动健康检查
-lib/client.js               2250 行  浏览器端：侧栏按钮、浮层、i18n（classic script，无构建）
-lib/safety.js                592 行  纯函数：tag 比较、peer 冲突、路径白名单、环境清理
-test/update-safety.test.mjs  477 行  20 条测试
+lib/index.js                2487 行  host 端：API 路由、更新/回退管线、stash、启动健康检查
+lib/client.js               2143 行  浏览器端：侧栏按钮、浮层、i18n（classic script，无构建）
+lib/safety.js                657 行  纯函数：tag 比较、peer 冲突、路径白名单、环境清理
+test/update-safety.test.mjs  797 行  35 条测试
 icon.svg                      18 行  插件图标（128 网格）
 ```
 
 ```bash
 node --test test/*.test.mjs
-# ℹ tests 20 · pass 19 · fail 0 · skip 1
+# ℹ tests 35 · pass 35 · fail 0
 ```
 
-唯一 skip 的是需要创建符号链接的用例——Windows 没开开发者模式时 `symlinkSync` 抛 EPERM，已改成能力探测后 skip，不是坏掉。
-
-20 条里有 6 条是**运行时行为测试**（真的起 git 子进程、真的跑一次注定失败的回滚），不是源码正则：
+35 条里有若干条是**运行时行为测试**（真的起 git 子进程、真的跑一次注定失败的回滚、真的验证 Fetch route 的 SSE 流），不只是源码正则：
 
 ```
 runUpdateStreaming resolves and closes the stream on a non-git directory
@@ -349,7 +344,7 @@ a git call survives a poisoned GIT_CONFIG_* environment
 1. **`lib/client.js` 没有构建步骤**——是 classic script，靠 `window.__ModuleLoader__.load({ id, factory })` 注册，内部 `require("react")` 拿平台模块。不能改成 ESM/TS、不能裸 import、不能加打包工具。
 2. **`lib/client.js` 是 CRLF + tab 缩进**，含约 185 条 `tr("中文原文")` 字典项。改它必须用精确匹配（含 `\r\n`）。
 3. **React 只用 `useState / useEffect / useRef / useCallback` + `createElement`（别名 `h`）**，无 JSX。
-4. **host 端路由都是 loopback-only**，这是刻意的安全边界，别为了「方便测试」放开。
+4. **host 端路由必须走 `ctx.connection.fetch.register`**，由宿主统一鉴权；不要再退回裸 `webServer.register` + 自写 loopback fence——那会让浏览器里打开的任意网页都能触发更新。端点方法白名单与 `requestBody`（`/run` 为 `streaming`）要保持和 handler 一致。
 
 ### 两类改动，两种生效方式
 

@@ -24,7 +24,7 @@ import {
   tagHealthMessages,
   DEFAULT_REQUIRED_PATHS,
 } from '../lib/safety.js'
-import { bootVerifyHelperSource, updateHelperSource, sanitizeGitEnv } from '../lib/index.js'
+import { apply, UPDATE_PATHS, inject, bootVerifyHelperSource, updateHelperSource, sanitizeGitEnv } from '../lib/index.js'
 // 同一份判据也必须覆盖 safety.js 自己那份 GIT_ENV（它独立于 index.js）。
 import { sanitizeGitEnv as sanitizeGitEnvFromSafety } from '../lib/safety.js'
 
@@ -90,13 +90,15 @@ test('peer conflicts flag WorkBuddy-style pins and ignore unrelated peers', () =
   assert.match(text.zh, /0\.2\.1/)
 })
 
-test('profile scan reads profile, nested plugins, and direct dependencies', () => {
+test('profile scan reads enabled plugins only; installed-but-disabled is ignored', () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-profiles-'))
   const profile = join(root, 'web')
   mkdirSync(join(profile, 'plugins', 'extra'), { recursive: true })
   mkdirSync(join(profile, 'node_modules', '@example', 'workbuddy'), { recursive: true })
+  mkdirSync(join(profile, 'node_modules', '@example', 'disabled'), { recursive: true })
   writeFileSync(join(profile, 'package.json'), JSON.stringify({
-    dependencies: { '@example/workbuddy': '1.0.0' },
+    dependencies: { '@example/workbuddy': '1.0.0', '@example/disabled': '1.0.0' },
+    dsh: { profile: { bundles: ['@example/workbuddy', '@example/nested'] } },
   }))
   writeFileSync(join(profile, 'plugins', 'extra', 'package.json'), JSON.stringify({
     name: '@example/nested',
@@ -106,9 +108,14 @@ test('profile scan reads profile, nested plugins, and direct dependencies', () =
     name: '@example/workbuddy',
     peerDependencies: { '@deepseek-ai/deepseek-harness': '0.2.1' },
   }))
+  writeFileSync(join(profile, 'node_modules', '@example', 'disabled', 'package.json'), JSON.stringify({
+    name: '@example/disabled',
+    peerDependencies: { '@deepseek-ai/deepseek-harness': '0.2.1' },
+  }))
   const found = scanProfilePeerConflicts('dsh-v0.2.2-alpha.2', root)
   const plugins = found.map((item) => item.plugin).sort()
   assert.deepEqual(plugins, ['@example/nested', '@example/workbuddy'])
+  assert.ok(!plugins.includes('@example/disabled'), 'installed-but-disabled plugin must not be reported')
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -504,4 +511,318 @@ test('a git call survives a poisoned GIT_CONFIG_* environment', () => {
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+// ---- Authenticated route registration (security regression) ----------------
+// The plugin-directory review flagged that these process-control routes were
+// mounted via bare `webServer.register` with only a hand-rolled loopback fence,
+// so any web page open in the browser could call them. They must now live on
+// the host-authenticated `connection.fetch` table.
+
+function mockCtx() {
+  const routes = new Map()
+  const webServerRoutes = []
+  let disposeCalls = 0
+  const ctx = {
+    get connection() {
+      return {
+        fetch: {
+          register(route) {
+            assert.ok(!routes.has(route.path), `duplicate route ${route.path}`)
+            routes.set(route.path, route)
+            return async () => { disposeCalls++ }
+          },
+        },
+      }
+    },
+    get webServer() {
+      return {
+        register(route) {
+          webServerRoutes.push(route)
+          return () => {}
+        },
+      }
+    },
+    agents: {},
+    effect(fn) {
+      const dispose = fn()
+      ctx._dispose = dispose
+      return dispose
+    },
+  }
+  return { ctx, routes, webServerRoutes, disposeCallsOf: () => disposeCalls }
+}
+
+test('inject declares connection so the host admission service is available', () => {
+  assert.ok(inject.includes('connection'), 'inject must include connection')
+})
+
+test('apply mounts all routes on connection.fetch, never on bare webServer', async () => {
+  const { ctx, routes, webServerRoutes } = mockCtx()
+  apply(ctx, { repoDir: mkdtempSync(join(tmpdir(), 'dsh-update-routes-')) })
+  assert.equal(webServerRoutes.length, 0, 'no route may bypass connection auth via webServer.register')
+  assert.deepEqual([...routes.keys()].sort(), [
+    UPDATE_PATHS.status, UPDATE_PATHS.ping, UPDATE_PATHS.notes, UPDATE_PATHS.run, UPDATE_PATHS.restart,
+  ].sort())
+  assert.deepEqual(routes.get(UPDATE_PATHS.status).methods, ['GET'])
+  assert.deepEqual(routes.get(UPDATE_PATHS.run).methods, ['POST'])
+  assert.equal(routes.get(UPDATE_PATHS.run).requestBody, 'streaming')
+  assert.equal(routes.get(UPDATE_PATHS.restart).requestBody, 'buffered')
+  await ctx._dispose()
+})
+
+test('fetch handlers answer a normal GET with a JSON Response', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-update-fetch-'))
+  try {
+    const { ctx, routes } = mockCtx()
+    // Avoid a real git remote lookup: /ping needs no git at all.
+    apply(ctx, { repoDir: root })
+    const ping = routes.get(UPDATE_PATHS.ping).fetch
+    const res = await ping(new Request('http://localhost' + UPDATE_PATHS.ping, { method: 'GET' }))
+    assert.equal(res.status, 200)
+    const body = await res.json()
+    assert.equal(body.ok, true)
+    assert.equal(typeof body.pid, 'number')
+    await ctx._dispose()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the /run fetch route streams newline JSON and closes even for a failed update', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-update-run-'))
+  try {
+    const { ctx, routes } = mockCtx()
+    apply(ctx, { repoDir: root })
+    const run = routes.get(UPDATE_PATHS.run).fetch
+    const res = await run(new Request('http://localhost' + UPDATE_PATHS.run, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    }))
+    assert.equal(res.status, 200)
+    assert.match(res.headers.get('content-type'), /text\/event-stream/)
+    const text = await res.text()
+    const events = text.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l))
+    assert.ok(events.some((e) => e.type === 'step'), 'a progress line must stream before the result')
+    const done = events.find((e) => e.type === 'done')
+    assert.ok(done !== undefined, 'the stream must close with a done event')
+    assert.equal(done.ok, false)
+    await ctx._dispose()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('package.json declares engines.dsh >=0.2.3-0 and no longer claims unauthenticated routes', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(pkg.engines.dsh, '>=0.2.3-0')
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+  // The directory description's old warning must be gone after the fix.
+  assert.ok(!/它的 HTTP 路由没有 DSH 的访问检查|no DSH access check/i.test(readme),
+    'README must not still claim the routes are unauthenticated')
+})
+
+test('client labels the GitHub link as official release notes and keeps the update button clickable while running', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // Old ambiguous label (it also appeared next to the in-panel release notes)
+  // must be renamed so users can tell it apart from the streamed update log.
+  assert.ok(!client.includes('"查看日志 ↗"'), 'old ambiguous “查看日志 ↗” label must be gone')
+  assert.ok(client.includes('"查看官方发布说明 ↗"'), 'the GitHub link must be labelled as official release notes')
+  // While an update runs the trigger must stay clickable so the progress
+  // panel can be reopened: no hard disabled, no unconditional early return.
+  assert.ok(!/disabled:\s*upPhase === "running"/.test(client),
+    'the update trigger must not be disabled while running')
+  assert.ok(!/if \(upPhase === "running"\) return;\s*\n\s*\/\/ 两个浮层互斥/.test(client),
+    'openPanel must not bail out while running')
+  assert.ok(client.includes('if (!keepView) void check(net)'),
+    'reopening the panel during an update/confirmation must reuse the view, not re-check')
+  assert.ok(client.includes('if (upPhase !== "running") runToken.current++'),
+    'closing the panel mid-update must not invalidate the progress stream')
+})
+
+test('client persists the network source choice (incl. proxy port) across panel opens', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  assert.ok(client.includes('const NET_KEY = "dsh-update:net"'), 'a dedicated localStorage key must exist')
+  assert.ok(client.includes('useState(() => readNet())'),
+    'net state must initialise from the persisted choice, not a hardcoded auto')
+  assert.ok(/setNet\(next\);\s*\r?\n\s*writeNet\(next\)/.test(client),
+    'changeNet must persist the new choice including its proxy port / mirror')
+  // readNet must validate the stored shape so a stale/hand-edited value cannot
+  // poison the source picker (a bad port must not be sent to /run).
+  assert.ok(client.includes('Number.isInteger(p) && p >= 1 && p <= 65535'),
+    'persisted proxy port must be validated on read')
+})
+
+test('rollback triggers the same auto-restart page refresh as an update', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // The done handler used to gate armRestartWatch behind `if (trackUpdate)`,
+  // which is false for a rollback (targetTag set) — so a rollback finished but
+  // never polled /ping and never reloaded. It must be called for both paths.
+  const doneBlock = client.slice(
+    client.indexOf('} else if (evt.type === "done")'),
+    client.indexOf('} else if (evt.type === "conflict")'),
+  )
+  assert.ok(/if \(evt\.autoRestart\) armRestartWatch\(evt\.restartWindowMs\)/.test(doneBlock),
+    'the done handler must arm the restart watcher for rollback too, not only for updates')
+  // Both the button terminal state and the restart watcher must be outside any
+  // `if (trackUpdate)` guard, so a rollback (trackUpdate=false) reaches them.
+  assert.ok(/setUpPct\(100\);[\s\S]*?setUpPhase\("done"\);[\s\S]*?if \(evt\.autoRestart\) armRestartWatch/.test(doneBlock),
+    'button done state and armRestartWatch must both run for rollback too')
+  // Rollback driven from the update panel must drive the sidebar button's
+  // progress bar (not just the panel), using the rollback step parser.
+  assert.ok(client.includes('const progressOf = targetTag ? rollbackProgressOf : updateProgressOf'),
+    'rollback must use its own step parser to advance the button progress')
+  assert.ok(/if \(trackProgress\) \{\s*\r?\n\s*const step = progressOf\(line\)/.test(client),
+    'progress must be tracked for both update and rollback (no trackUpdate guard)')
+  assert.ok(/setUpPhase\("running"\);\s*\r?\n\s*if \(!resume\) \{/.test(client),
+    'the button must enter its running state for a rollback too')
+})
+
+test('rollback keeps its explicit target tag instead of recomputing to the latest', () => {
+  const host = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  const a = host.indexOf('const afterFetch = async () => {')
+  const b = host.indexOf('// mirror 来源', a)
+  const block = host.slice(a, b)
+  // A rollback target is chosen by the user; recomputeTarget() would replace it
+  // with the remote latest and could end the run as `skipped` doing nothing.
+  assert.ok(/if \(isRollback\) \{[\s\S]*?Verifying tag[\s\S]*?return/.test(block),
+    'rollback must verify its own target and return before recomputeTarget')
+  assert.ok(block.indexOf('if (isRollback)') < block.indexOf('recomputeTarget()'),
+    'the rollback branch must come before any recomputeTarget call')
+  // The rollback branch must close with `return` before the recomputeTarget line.
+  const rIf = block.indexOf('if (isRollback) {')
+  const rReturn = block.indexOf('return', rIf)
+  const recompute = block.indexOf('recomputeTarget()')
+  assert.ok(rReturn !== -1 && rReturn < recompute,
+    'rollback must return before reaching recomputeTarget')
+})
+
+test('client progress popover is minimal: no header, source picker or yellow warning', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // Starting any task closes the panel so the button itself shows progress.
+  assert.ok(/setUpHint\(targetTag \? tr\("准备回退"\)[\s\S]{0,120}setOpen\(false\);/.test(client),
+    'starting a task must close the panel, including rollback')
+  // While updating, the panel hides its title/close/source/auto-check rows.
+  assert.ok(client.includes('const inProgress = view.kind === "updating"'),
+    'an in-progress view must be detected to render a minimal popover')
+  assert.ok(/inProgress \? null : h\("div", \{ style: headStyle \}/.test(client),
+    'the progress popover must hide its header')
+  assert.ok(/inProgress \? null : sourceRow/.test(client),
+    'the progress popover must hide the source picker')
+  assert.ok(/inProgress \? null : autoRow/.test(client),
+    'the progress popover must hide the auto-check row')
+  // The big yellow warn box and its helper are gone.
+  assert.ok(!client.includes('const warnBox'), 'the yellow warning box must be removed')
+  assert.ok(!client.includes('willDetachUpdate'), 'detach-warning helper must be removed')
+})
+
+test('safety-gate interceptions reopen the panel so the user can confirm', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const a = client.indexOf('} else if (evt.type === "conflict" || evt.type === "tag-health" || evt.type === "peers")')
+  const b = client.indexOf('}, { stash: !!stash, targetTag', a)
+  const block = client.slice(a, b)
+  // The panel is closed when a task starts. When a safety gate blocks the
+  // checkout (peer conflict / missing paths / local changes), the user must see
+  // the interception card — otherwise the button just sits at a stuck progress %.
+  assert.ok(/setOpen\(true\)/.test(block),
+    'an interception must reopen the panel so its confirm buttons are visible')
+  assert.ok(/setUpPhase\("confirm"\)/.test(block),
+    'the button must enter a distinct confirm state, not "error"/"update failed"')
+  assert.ok(block.includes('measureAnchor()'),
+    'the reopened panel must be re-anchored to the button')
+  assert.ok(/evt\.type === "conflict"[\s\S]*?evt\.type === "tag-health"/.test(block),
+    'all three interception kinds must still be distinguished')
+  // The confirm state must have its own button label, not reuse the error text.
+  const cIf = client.indexOf('} else if (upPhase === "confirm")')
+  const cNext = client.indexOf('} else if (upPhase === "error")', cIf)
+  const confirmBlock = client.slice(cIf, cNext)
+  assert.ok(confirmBlock.includes('tr("需要你确认")'),
+    'the confirm-state button must say “needs confirmation”, not “update failed, retry”')
+  const codeOnly = confirmBlock.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+  assert.ok(!/tr\("更新失败，重试"\)/.test(codeOnly),
+    'the confirm-state button must not assign the failure label')
+})
+
+test('when an update is available, the version list only offers older versions to roll back to', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // The “available” view already has a top-level “start update” button; listing
+  // newer tags with an “update to this version” button below duplicated it.
+  const a = client.indexOf('} else if (view.kind === "available" && status !== undefined)')
+  const b = client.indexOf('} else if (view.kind === "result"', a)
+  const block = client.slice(a, b)
+  assert.ok(/manualOptions = \(Array\.isArray\(status\.tags\) \? status\.tags : \[\]\)\s*\r?\n\s*\.filter\(\(t\) => t !== status\.localTag && compareTagTo\(t, status\.localTag\) < 0\)/.test(block),
+    'available view must filter the version list to tags older than local only')
+  assert.ok(block.includes('tr("或回退到历史版本")'),
+    'the section must be labelled as rollback-only, avoiding duplication with “start update”')
+  // The up-to-date view must also only offer older versions — offering an
+  // “update to this version” there is self-contradictory.
+  const result = client.slice(b, client.indexOf('} else if (view.kind === "updating"', b))
+  assert.ok(/manualOptions = \(Array\.isArray\(status\.tags\) \? status\.tags : \[\]\)\s*\r?\n\s*\.filter\(\(t\) => t !== status\.localTag && compareTagTo\(t, status\.localTag\) < 0\)/.test(result),
+    'up-to-date view must also filter to older versions only')
+  assert.ok(result.includes('tr("或回退到历史版本")'),
+    'the up-to-date view must label its version list as rollback-only')
+  assert.ok(!/tr\("更新到此版本"\)/.test(result),
+    'an up-to-date view must never offer “update to this version”')
+})
+
+test('auto-refresh uses a localStorage boot marker, independent of the SSE stream', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // The build step replaces web assets and can sever the SSE before the done
+  // event arrives, so a done-driven watcher alone never fires. A persisted
+  // marker survives page reloads and lets a fresh page notice the new boot id.
+  assert.ok(client.includes('const RELOAD_KEY = "dsh-update:pending-reload"'),
+    'a dedicated persisted key must exist')
+  assert.ok(client.includes('function watchPendingReload()'),
+    'a loader that checks the marker on page load must exist')
+  assert.ok(/boot !== lastBoot[\s\S]{0,120}window\.location\.reload\(\)/.test(client),
+    'the watcher must reload once the boot id changes')
+  assert.ok(client.includes('watchPendingReload();'),
+    'the watcher must be started from apply() on page load')
+  // The marker is written when a run starts and cleared on non-restart outcomes.
+  assert.ok(/markPendingReload\(b\.boot, targetTag\)/.test(client),
+    'a run must record the current boot as the baseline')
+  assert.ok(client.includes('clearPendingReload()'),
+    'failed/skipped/intercepted outcomes must clear the marker')
+  // The marker has a bounded lifetime so a stale entry cannot cause a surprise reload.
+  assert.ok(client.includes('RELOAD_MAX_MS'),
+    'the marker must expire so it cannot trigger a stale reload')
+  // It must be idempotent: only one polling loop at a time.
+  assert.ok(client.includes('let reloadWatchActive = false'),
+    'the watcher must be idempotent')
+})
+
+test('prerelease targets are matched by their stable version to avoid false peer conflicts', () => {
+  // A range like >=0.1.7-rc.1 <0.3.0-0 clearly covers 0.2.3-alpha.1, but
+  // node-semver says a prerelease satisfies no stable range. Checking the
+  // stable core removes the flood of false positives on alpha rollbacks.
+  assert.deepEqual(
+    peerConflictsInManifest({ peerDependencies: { '@deepseek-ai/dsh-attachment': '>=0.1.7-rc.1 <0.3.0-0' } }, '0.2.3-alpha.1'),
+    [],
+    'a range that covers the stable core must not flag an alpha target',
+  )
+  // Genuine mismatches on the stable core must still be flagged.
+  assert.equal(
+    peerConflictsInManifest({ peerDependencies: { '@deepseek-ai/cordis': '^4.0.4' } }, '0.2.3-alpha.1').length,
+    1,
+    'a real peer mismatch must still be reported',
+  )
+})
+
+test('interception wording, cancel reset and resume progress behave correctly', () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // Rollback interception button says “roll back anyway”, not “update anyway”.
+  assert.ok(/view\.targetTag \? tr\("仍要继续回退"\) : tr\("仍要继续更新"\)/.test(client),
+    'the interception action must reflect update vs rollback')
+  // Cancel (recheck) must reset the confirm state so the button looks normal again.
+  assert.ok(/setUpPhase\(\(phase\) => \(phase === "done" \|\| phase === "confirm" \? "idle" : phase\)\)/.test(client),
+    'cancelling an interception must return the button to idle')
+  // Confirming must resume progress rather than restart from 6%.
+  assert.ok(client.includes('const resume = !!(opts && opts.resume)'),
+    'run must know it is resuming from an interception')
+  assert.ok(/if \(!resume\) \{\s*\r?\n\s*setUpPct\(6\)/.test(client),
+    'progress must not reset when continuing after an interception')
+  assert.ok(client.includes('resume: true'),
+    'the confirm handlers must pass the resume flag')
+  // Conflict details are shown once, in a collapsed block (no duplicate list).
+  assert.ok(client.includes('tr("查看冲突详情")'),
+    'conflict details must be collapsed behind a summary')
 })
