@@ -58,8 +58,8 @@
 
 <table>
 <tr>
-<td valign="top"><img src="docs/images/progress-window-zh.png" width="300" alt="更新执行中的进度窗：当前阶段、逐行日志，右上角有关闭按钮"></td>
-<td valign="top"><img src="docs/images/button-progress-zh.png" width="97" alt="执行更新时的侧栏按钮：蓝色色带循环走动，文字显示「安装中」，不显示百分比"></td>
+<td valign="top"><img src="docs/images/progress-window-v2-zh.png" width="300" alt="更新执行中的进度窗：当前阶段、逐行日志，右上角有关闭按钮"></td>
+<td valign="top"><img src="docs/images/button-running-zh.png" width="97" alt="执行更新时的侧栏按钮：蓝色色带循环走动，文字显示「安装中」，不显示百分比"></td>
 </tr>
 <tr>
 <td align="center"><sub>进度窗（点 ✕ 可关，任务继续跑）</sub></td>

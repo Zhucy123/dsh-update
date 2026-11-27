@@ -60,8 +60,8 @@ The sidebar button switches to progressive wording (Installing, Building…) and
 
 <table>
 <tr>
-<td valign="top"><img src="docs/images/progress-window-en.png" width="300" alt="Progress window during an update: current stage and a line-by-line log, with a close button in the corner"></td>
-<td valign="top"><img src="docs/images/button-progress-en.png" width="110" alt="Sidebar button during an update: a blue band sweeping, label reads Installing, no percentage"></td>
+<td valign="top"><img src="docs/images/progress-window-v2-en.png" width="300" alt="Progress window during an update: current stage and a line-by-line log, with a close button in the corner"></td>
+<td valign="top"><img src="docs/images/button-running-en.png" width="110" alt="Sidebar button during an update: a blue band sweeping, label reads Installing, no percentage"></td>
 </tr>
 <tr>
 <td align="center"><sub>Progress window (✕ hides it; the run continues)</sub></td>

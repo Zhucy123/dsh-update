@@ -60,8 +60,8 @@
 
 <table>
 <tr>
-<td valign="top"><img src="docs/images/progress-window-ja.png" width="300" alt="更新実行中の進捗ウィンドウ：現在の段階と行単位ログ、右上に閉じるボタン"></td>
-<td valign="top"><img src="docs/images/button-progress-ja.png" width="149" alt="更新実行中のサイドバーボタン：青い帯が流れ、ラベルは「インストール中」、パーセントなし"></td>
+<td valign="top"><img src="docs/images/progress-window-v2-ja.png" width="300" alt="更新実行中の進捗ウィンドウ：現在の段階と行単位ログ、右上に閉じるボタン"></td>
+<td valign="top"><img src="docs/images/button-running-ja.png" width="149" alt="更新実行中のサイドバーボタン：青い帯が流れ、ラベルは「インストール中」、パーセントなし"></td>
 </tr>
 <tr>
 <td align="center"><sub>進捗ウィンドウ（✕ で閉じても処理は続行）</sub></td>
