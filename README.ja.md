@@ -8,7 +8,7 @@
 
 サイドバーのボタンを 1 回押すだけで DSH をアップグレードできます。git や pnpm のコマンドを手打ちする必要はもうありません。
 
-[![Version](https://img.shields.io/badge/version-2.0.0-4f8cff)](CHANGELOG.ja.md)
+[![Version](https://img.shields.io/badge/version-2.0.1-4f8cff)](CHANGELOG.ja.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4f8cff)](#互換性)
 [![DSH](https://img.shields.io/badge/DSH-plugin%20%C2%B7%20web-blue)](#インストール)
@@ -365,7 +365,7 @@ a git call survives a poisoned GIT_CONFIG_* environment
 
 ## バージョン履歴
 
-現在 **v2.0.0**。バージョンごとの完全な記録は [CHANGELOG.ja.md](CHANGELOG.ja.md) を参照してください。
+現在 **v2.0.1**。バージョンごとの完全な記録は [CHANGELOG.ja.md](CHANGELOG.ja.md) を参照してください。
 
 ## プライバシー
 

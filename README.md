@@ -8,7 +8,7 @@
 
 在侧栏点一下就能升级 DSH，不用再手敲一串 git 和 pnpm 命令。
 
-[![Version](https://img.shields.io/badge/version-2.0.0-4f8cff)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.1-4f8cff)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4f8cff)](#兼容性)
 [![DSH](https://img.shields.io/badge/DSH-plugin%20%C2%B7%20web-blue)](#安装)
@@ -361,7 +361,7 @@ a git call survives a poisoned GIT_CONFIG_* environment
 
 ## 版本历史
 
-当前 **v2.0.0**。完整逐版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前 **v2.0.1**。完整逐版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 隐私
 
