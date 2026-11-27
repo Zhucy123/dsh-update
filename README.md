@@ -56,7 +56,16 @@
 
 侧栏按钮同时变成进行时文案（安装中 / 构建中…），跑的是同一条色带。完成时变绿显示「更新完成」或「回退完成」。
 
-<p align="left"><img src="docs/images/button-progress-zh.png" width="100" alt="执行更新时的按钮：蓝色色带循环走动，文字显示「构建中」"></p>
+<table>
+<tr>
+<td valign="top"><img src="docs/images/progress-window-zh.png" width="300" alt="更新执行中的进度窗：当前阶段、逐行日志，右上角有关闭按钮"></td>
+<td valign="top"><img src="docs/images/button-progress-zh.png" width="97" alt="执行更新时的侧栏按钮：蓝色色带循环走动，文字显示「安装中」，不显示百分比"></td>
+</tr>
+<tr>
+<td align="center"><sub>进度窗（点 ✕ 可关，任务继续跑）</sub></td>
+<td align="center"><sub>侧栏按钮</sub></td>
+</tr>
+</table>
 
 ## 特性
 

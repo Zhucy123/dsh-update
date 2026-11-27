@@ -58,7 +58,16 @@
 
 サイドバーのボタンも進行形の文言（インストール中、ビルド中…）に変わり、同じ帯が流れます。完了すると緑になり「更新完了」「ロールバック完了」と表示します。
 
-<p align="left"><img src="docs/images/button-progress-ja.png" width="155" alt="更新実行中のボタン：青い帯が流れ、ラベルは「ビルド中」"></p>
+<table>
+<tr>
+<td valign="top"><img src="docs/images/progress-window-ja.png" width="300" alt="更新実行中の進捗ウィンドウ：現在の段階と行単位ログ、右上に閉じるボタン"></td>
+<td valign="top"><img src="docs/images/button-progress-ja.png" width="149" alt="更新実行中のサイドバーボタン：青い帯が流れ、ラベルは「インストール中」、パーセントなし"></td>
+</tr>
+<tr>
+<td align="center"><sub>進捗ウィンドウ（✕ で閉じても処理は続行）</sub></td>
+<td align="center"><sub>サイドバーボタン</sub></td>
+</tr>
+</table>
 
 ## 機能
 
