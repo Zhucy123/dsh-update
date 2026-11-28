@@ -8,7 +8,7 @@
 
 在侧栏点一下就能升级 DSH，不用再手敲一串 git 和 pnpm 命令。
 
-[![Version](https://img.shields.io/badge/version-2.0.1-4f8cff)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.2-4f8cff)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4f8cff)](#兼容性)
 [![DSH](https://img.shields.io/badge/DSH-plugin%20%C2%B7%20web-blue)](#安装)
@@ -168,10 +168,11 @@ pnpm install → pnpm run clean → pnpm run build
 - 同一时间只允许一个更新任务，重复触发返回 409
 - 5 个 API 路由全部注册在 DSH 的**共享 `/api` 鉴权通道**（`ctx.connection.fetch.register`）。宿主在请求到达插件前统一做 Host/Origin 信任栅栏（防 DNS rebinding / 跨域调用）与浏览器登录态校验——你在浏览器里打开的任何网页都无法再调用它们。返回 401/403 的是宿主，不是插件自己
 - `/run` / `/restart` 这类会真正改动系统的端点因此同样受登录态保护；插件侧只保留策略校验（supervisor / `allowRestart` / 进行中任务 / 目标 tag 白名单）
-- `POST /api/dsh-update/run` 限制请求体不超过 64 KiB（超限返回 413），并校验解析结果为 JSON 对象
+- `POST /api/dsh-update/run` 限制请求体不超过 64 KiB（超限返回 413），非法或非对象 JSON 返回 HTTP 400（不再静默按空参数继续）
 - 检测到「有对话正在进行」时，强制更新二次确认会完整保留用户的自动暂存（`stash`）等选项；在 `done` / `error` 态点击侧栏按钮重查也会沿用已选择的网络来源与代理配置
-- 重启与后台安装探测监听端口时同时检查 `127.0.0.1` 与 `::1`（IPv6 回环）
-- 所有 git 调用强制 `GIT_TERMINAL_PROMPT=0`，绝不交互式要凭据
+- 重启与后台安装探测监听端口时优先解析宿主真实监听端口，并同时检查 `127.0.0.1` 与 `::1`（IPv6 回环）；detached helper 通过 `tmpdir()` 临时 `.cjs` 脚本执行并等待 `'spawn'` 确认后再向宿主发 `SIGTERM`
+- 所有 git 调用强制 `GIT_TERMINAL_PROMPT=0`，绝不交互式要凭据；输出流与错误中的 URL 内嵌凭据（`https?://user:pass@`）自动脱敏为 `***@`
+- 直连与代理拉取 GitHub 发布说明均强制 2MB 体积上限，HTTP `CONNECT` 隧道显式锁定 `ALPNProtocols: ['http/1.1']`
 - 回退目标必须是 `dsh-v*` 前缀，拒绝任意 ref
 - 镜像拉取后自动向 GitHub 官方 API 核对目标 tag 的 commit SHA（不一致立即中止，绝不检出）；官方 API 不可达时默认提示风险并继续，配置 `verifyMirrorSha: true` 时改为严格中止（对信任边界要求严格时请选用「官方 + 本地代理」）
 - 检查与更新前校验目标目录是否为 `deepseek-harness` 仓库（并拒绝 npm 安装的 `@deepseek-ai/dsh`，除非配置 `allowUnverifiedRepo: true`）；HEAD 存在未打 `dsh-v*` tag 的本地提交时默认拒绝检出（除非配置 `allowLocalCommits: true`）
@@ -343,36 +344,39 @@ dsh plugin --profile web add link:$(pwd)
 ```
 
 ```
-lib/index.js                3021 行  host 端：API 路由、更新/回退管线、stash、启动健康检查、HTTP CONNECT 代理隧道
-lib/client.js               2317 行  浏览器端：侧栏按钮、浮层、i18n（classic script，无构建）
-lib/safety.js                696 行  纯函数：tag 比较、peer 冲突、路径白名单、环境清理
-test/update-safety.test.mjs 1778 行  53 条测试
+lib/index.js                3421 行  host 端：API 路由、更新/回退管线、stash、启动健康检查、HTTP CONNECT 代理隧道
+lib/client.js               2329 行  浏览器端：侧栏按钮、浮层、i18n（classic script，无构建）
+lib/safety.js                774 行  纯函数：仓库身份校验、tag 比较、peer 冲突、路径白名单、凭据脱敏、环境清理
+test/update-safety.test.mjs 2753 行  69 条测试
 icon.svg                      18 行  插件图标（128 网格）
 ```
 
 ```bash
 node --test test/*.test.mjs
-# ℹ tests 53 · pass 53 · fail 0
+# ℹ tests 69 · pass 69 · fail 0
 ```
 
-其中 `revision check and orphan lib deletion use a real git tree` 这条用例需要创建符号链接——在未开启开发者模式的 Windows 上因无 symlink 权限会通过能力探测自动 skip（此时为 52 pass / 1 skipped），并非用例损坏；开启权限或类 Unix 环境实测为 53 条全部通过。
+其中 `revision check and orphan lib deletion use a real git tree` 这条用例需要创建符号链接——在未开启开发者模式的 Windows 上因无 symlink 权限会通过能力探测自动 skip（此时为 68 pass / 1 skipped），并非用例损坏；开启权限或类 Unix 环境实测为 69 条全部通过。
 
-53 条里有若干条是**运行时行为测试**（真的起 git 子进程、真的跑一次注定失败的回滚、真的起本地代理验证 HTTP `CONNECT` 隧道与 Fetch route 的 SSE 流），不只是源码正则：
+69 条里有若干条是**运行时行为测试**（真的起 git 子进程、真的跑一次注定失败的回滚、真的起本地代理验证 HTTP `CONNECT` 隧道与 Fetch route 的 SSE 流、验证异步 helper 启动失败不杀宿主等），不只是源码正则：
 
 ```
 runUpdateStreaming resolves and closes the stream on a non-git directory
 runUpdateStreaming with stash: true leaves existing stash@{0} untouched when working tree is clean
-handleRun handles "null" JSON body safely without locking the latch, and returns 413 for >64KiB body
+runUpdateStreaming restores pre-checkout stash when checkout fails after stash: true
+handleRun returns 400 for invalid JSON or non-object JSON without locking the latch
+unrelated git repository is rejected by /status and /run unless allowUnverifiedRepo is true
+verifyMirrorTagSha and mirror fetch validation block SHA mismatches and honor verifyMirrorSha
+async spawn failure on /restart returns 500, resets latch, leaves no .cjs files, and does not kill host
 performRollback reports failure instead of throwing when it cannot restore
 a git call survives a poisoned GIT_CONFIG_* environment
 fetchJson tunnels HTTPS through local HTTP CONNECT proxy (normal & chunked) and forwards HTTP GET
-/api/dsh-update/release-notes routes github+proxyPort through proxy and isolates error cache per proxyPort
 ```
 
 ### 几条硬约束（改代码前必读）
 
 1. **`lib/client.js` 没有构建步骤**——是 classic script，靠 `window.__ModuleLoader__.load({ id, factory })` 注册，内部 `require("react")` 拿平台模块。不能改成 ESM/TS、不能裸 import、不能加打包工具。
-2. **`lib/client.js` 是 CRLF + tab 缩进**，含 **175** 条 `tr("中文原文")` 字典项。改它必须用精确匹配（含 `\r\n`）。
+2. **`lib/client.js` 是 CRLF + tab 缩进**，含 **177** 条 `tr("中文原文")` 字典项。改它必须用精确匹配（含 `\r\n`）。
 3. **React 只用 `useState / useEffect / useRef / useCallback` + `createElement`（别名 `h`）**，无 JSX。
 4. **host 端路由必须走 `ctx.connection.fetch.register`**，由宿主统一鉴权；不要再退回裸 `webServer.register` + 自写 loopback fence——那会让浏览器里打开的任意网页都能触发更新。端点方法白名单与 `requestBody`（`/run` 为 `streaming`）要保持和 handler 一致。
 
@@ -391,7 +395,7 @@ fetchJson tunnels HTTPS through local HTTP CONNECT proxy (normal & chunked) and 
 
 ## 版本历史
 
-当前 **v2.0.1**。完整逐版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前 **v2.0.2**。完整逐版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 隐私
 

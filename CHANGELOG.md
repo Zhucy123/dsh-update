@@ -6,7 +6,32 @@
 
 > **npm 包名**:`@zhucy123/dsh-update`(2026-09-02 发布时,裸名 `dsh-update` 已被第三方注册为 1.3KB 占位空壳包,故采用 scoped 名;插件 ID 与 `/api/dsh-update/*` 路由前缀仍为 `dsh-update`,下方 v1.2.0 条目中的历史命令仅作说明)。
 
-## v2.0.1(当前)
+## v2.0.2(当前)
+
+围绕代码审查发现的问题完成一轮集中安全边界与进程生命周期加固，补齐仓库身份识别、镜像 SHA 校验、Helper 临时脚本与异步失败保护、全面监督进程识别以及 16 项真实运行时行为测试。
+
+### 安全与仓库边界修复
+
+- **校验更新目标仓库身份，并明确拒绝 npm 安装的 `@deepseek-ai/dsh`**(#2)：在 `lib/safety.js` 新增 `isNpmInstalledHarness` 与 `verifyHarnessRepo`，校验目标 `.git` 仓库的根 `package.json`（`@deepseek-ai/dsh-root` / `deepseek-harness`）、`apps/cli/package.json` 或 `origin` URL（`deepseek-harness`）。在 `/status`、`/run` 与 `defaultRepoDir()` 中拦截无关 git 仓库与通过 npm 安装的 CLI（可通过 `allowUnverifiedRepo: true` 跳过），并在 `lib/client.js` 与三语 README 中给出清晰的 `npm install -g @deepseek-ai/dsh@latest` 升级引导
+- **第三方镜像拉取后核对 tag SHA**(#4)：新增 `verifyMirrorTagSha`，经第三方镜像（显式镜像或 `auto` 回退）fetch 后、checkout 前直接向官方 `api.github.com` 核对目标 tag 的 commit SHA。若不一致立即中止更新且不检出；官方 API 不可达时默认提示信任风险继续，可配置 `verifyMirrorSha: true` 严格中止。三语 README 同步写明镜像路径的信任边界
+- **凭据脱敏与网络协议加固**(#10)：新增 `redactSecrets` 对 git/pnpm 实时输出、`lsRemoteTags`、SSE 报错及冲突详情中的 `https?://user:pass@` 凭据脱敏；直连 `fetchJson` 补齐 2MB（`MAX_FETCH_JSON_BYTES`）响应体积上限（同时校验 `Content-Length` 与流式读取字节数）；HTTP `CONNECT` 隧道的 `tls.connect` 显式配置 `ALPNProtocols: ['http/1.1']`
+
+### 健壮性与进程生命周期修复
+
+- **Helper 改用临时 `.cjs` 脚本并在确认 `'spawn'` 后再退出宿主**(#3 / #10)：新增 `spawnDetachedHelper`，将三个 detached helper 写入 `tmpdir()` 临时 `.cjs` 文件执行（规避 Windows `CreateProcess` 32767 字符上限，退出或失败时自删），并在 `'spawn'` 事件确认进程拉起后才安排宿主 `SIGTERM`。异步 `ENOENT` / `EMFILE` 启动失败时，`/restart` 立即复位 `restartScheduled` 并返回 HTTP `500`，`handOffToUpdate` 与 `scheduleBootVerify` 触发自动回滚并向 SSE 报错，绝不误杀宿主
+- **`git describe` 限制为 `dsh-v*` 并保护未打 tag 的本地提交**(#5)：`localVersion` 改为 `git describe --tags --match 'dsh-v*' --abbrev=0`，消除仓库内其他 tag 遮蔽 `localTag` 导致的误报「可更新」；新增 `countUntaggedLocalCommits`，在 `/status` 返回 `localAheadCommits`，并在 `runUpdateStreaming` 检出前默认拒绝存在未包含在任何 `dsh-v*` tag 的本地提交，防止产生游离 HEAD（可配 `allowLocalCommits: true` 覆盖）
+- **`stash: true` 后 `checkout` 失败自动还原本地改动**(#6)：在 `checkout` 失败分支（含 `conflict` 及其他失败）引入 `restorePreCheckoutStash`，若更新前成功 `stash push -u`，先尝试 `git stash apply`（成功则 `stash drop`），apply 失败则保留 stash 条目并在错误详情中提示手动执行 `git stash apply` 恢复
+- **扩大监督进程识别范围**(#7)：扩展 `detectedSupervisor` 覆盖 `systemd`（system unit）、`systemd-user`（`NOTIFY_SOCKET` 或匹配 `MANAGERPID`）、`pm2`、`supervisord`、`launchd`（macOS `ppid === 1` 且非终端/SSH 继承）及 `container`（Docker / Kubernetes 容器），防止插件与托管进程双开抢占端口
+- **真实监听端口解析与 `boot-verify` 端口超时对齐**(#8)：新增 `resolveListeningPort`，按 `config.port` → 宿主 `webServer`/`connection` 端口 → CLI `--port`/`-p` → 请求 `Host`/URL 优先级获取真实端口；在 `bootVerifyHelperSource` 与 `updateHelperSource` 引入 `hostPid` 与 `isPidAlive` 探测，端口 60 秒仍被占用时，若旧宿主已退出则与分离路径对齐执行回滚，若旧宿主仍存活则写明确 `aborting:` 日志后退出，避免在存活宿主脚下清理构建或双开；新增 `parseDetachedUpdateLog` 从日志提取 `aborting:` 及构建失败 `reason`
+- **`/run` 非法 JSON 返回 400 与参数一致性**(#9 / #10)：`handleRun` 对读取失败、非法 JSON 或非对象 JSON（数组/基本类型）明确返回 HTTP `400`（保留空 body 与 `null` 的默认兼容且不锁 `activeRun`）；`runUpdateStreaming` 统一使用 `windowsDetachedUpdate === true` 默认关闭
+
+### 前端、依赖与测试
+
+- **fork 仓库发布说明链接**(#10)：`/status` 返回 `repoSlug`，`lib/client.js` 新增 `safeRepoSlug` 优先使用当前仓库的 `owner/repo` 拼接 GitHub Releases 链接
+- **解除 `agents` 硬依赖**(#10)：`inject` 移除 `agents`，`countRunningAgents` 改为从 `ctx` 动态安全读取，`agents` 服务不可用时不再影响插件挂载
+- **测试扩充**：单元测试由 53 条扩充至 **69 条**，新增 16 项覆盖上述安全与生命周期路径的运行时行为测试及 `node:vm` 前端组件渲染测试
+
+## v2.0.1
 
 这一版做两件事:**把 5 个 API 路由接进 DSH 的准入检查**(插件市场上架复核时指出的问题),以及把**更新/回退的整个过程重做**,让它在真实的回退场景里不再出岔子——白屏、刷新太慢、手动刷完它自己又刷一次,以及按钮上看不出到底在干什么。
 

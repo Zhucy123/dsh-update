@@ -6,7 +6,32 @@ This plugin follows [semver](https://semver.org/) and is independent of DSH's `d
 
 > **npm package name**: `@zhucy123/dsh-update` (when it was published on 2026-09-02, the bare name `dsh-update` had already been registered by a third party as a 1.3KB placeholder shell package, so the scoped name was adopted; the plugin ID and the `/api/dsh-update/*` route prefix are still `dsh-update`, and the historical command in the v1.2.0 entry below is for illustration only).
 
-## v2.0.1 (current)
+## v2.0.2 (current)
+
+A focused hardening release addressing all 9 issues from code review — adding repository identity verification, mirror tag SHA verification, temp `.cjs` helpers with async spawn failure protection, broader supervisor detection, and 16 new runtime behaviour tests.
+
+### Security & repository-boundary fixes
+
+- **Verified target repository identity and explicitly rejected npm-installed `@deepseek-ai/dsh`** (#2): added `isNpmInstalledHarness` and `verifyHarnessRepo` in `lib/safety.js` to validate the target `.git` repo via root `package.json` (`@deepseek-ai/dsh-root` / `deepseek-harness`), `apps/cli/package.json`, or `origin` URL (`deepseek-harness`). `/status`, `/run`, and `defaultRepoDir()` now reject unrelated git repositories and npm-installed CLIs (bypassable with `allowUnverifiedRepo: true`), with clear `npm install -g @deepseek-ai/dsh@latest` guidance in `lib/client.js` and all three READMEs
+- **Verified tag commit SHA after third-party mirror fetches** (#4): added `verifyMirrorTagSha` to compare the fetched tag's commit SHA against the official `api.github.com` endpoint before checkout. Mismatches abort immediately without checking out; when the official API is unreachable, it warns and proceeds by default, or aborts strictly when `verifyMirrorSha: true` is configured. Documented mirror trust boundaries in all three READMEs
+- **Credential redaction & HTTP transport hardening** (#10): added `redactSecrets` to mask `https?://user:pass@` in git/pnpm output, `lsRemoteTags`, SSE failures, and conflict details; added the 2MB (`MAX_FETCH_JSON_BYTES`) cap to direct `fetchJson` (via both `Content-Length` and streaming byte count); set `ALPNProtocols: ['http/1.1']` on `tls.connect` for HTTP `CONNECT` tunnels
+
+### Reliability & process-lifecycle fixes
+
+- **Temp `.cjs` helper scripts & wait for `'spawn'` before stopping the host** (#3 / #10): added `spawnDetachedHelper` to write detached helpers to temporary `.cjs` files in `tmpdir()` instead of `node -e` (avoiding the Windows 32,767-char command-line limit, self-deleting on exit or failure) and wait for `'spawn'` before scheduling host `SIGTERM`. On async `ENOENT` / `EMFILE` failures, `/restart` resets `restartScheduled` and returns HTTP `500`, while `handOffToUpdate` and `scheduleBootVerify` roll back and report to SSE without killing the host
+- **Scoped `git describe` to `dsh-v*` & protected untagged local commits** (#5): `localVersion` now uses `git describe --tags --match 'dsh-v*' --abbrev=0` so unrelated tags never shadow `localTag`; added `countUntaggedLocalCommits` (exposed as `localAheadCommits` in `/status`) and blocked checkout in `runUpdateStreaming` when HEAD has commits not in any `dsh-v*` tag unless `allowLocalCommits: true` is set
+- **Restored pre-checkout stash when `checkout` fails after `stash: true`** (#6): added `restorePreCheckoutStash` on the `checkout` failure path (including conflicts) to run `git stash apply` + `drop`, or keep the stash and surface manual recovery instructions if `apply` fails
+- **Expanded supervisor detection** (#7): `detectedSupervisor` now covers `systemd` (system units), `systemd-user` (`NOTIFY_SOCKET` or matching `MANAGERPID`), `pm2`, `supervisord`, `launchd` (macOS `ppid === 1` outside terminal/SSH sessions), and `container` (Docker / Kubernetes), preventing dual-instance races
+- **Resolved real listening port & aligned `boot-verify` port-timeout handling** (#8): added `resolveListeningPort` (`config.port` → host `webServer`/`connection` port → CLI `--port`/`-p` → request `Host`/URL); added `hostPid` and `isPidAlive` checks in both helpers so a 60s port timeout rolls back when the host has exited or logs `aborting:` and exits cleanly without racing a live host; added `parseDetachedUpdateLog` to surface `aborting:` and build-failure `reason`s in `/status`
+- **Returned HTTP `400` on invalid `/run` JSON & unified `windowsDetachedUpdate` default** (#9 / #10): `handleRun` now rejects read failures, malformed JSON, and non-object JSON (arrays/primitives) with HTTP `400` while preserving empty body and `null` defaults; `runUpdateStreaming` now checks `options.windowsDetachedUpdate === true` consistently
+
+### Frontend, dependencies & tests
+
+- **Fork-aware release notes links** (#10): `/status` exposes `repoSlug`, and `lib/client.js` adds `safeRepoSlug` so release-note links point to the repository's own GitHub Releases page
+- **Removed hard dependency on `agents`** (#10): removed `agents` from `inject` and made `countRunningAgents` read `ctx` dynamically so the plugin mounts cleanly even when `agents` is unavailable
+- **Expanded test suite**: grew from 53 to **69 tests**, adding 16 runtime behaviour and `node:vm` client rendering tests covering issues #2–#10
+
+## v2.0.1
 
 This release does two things: **routes all five API endpoints through DSH's admission check** (raised during the plugin-directory review), and **reworks the whole update/rollback experience** so it stops misbehaving in a real rollback — blank pages, a slow automatic reload, a second reload after a manual refresh, and a button that never showed what it was doing.
 

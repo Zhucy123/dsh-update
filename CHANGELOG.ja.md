@@ -6,7 +6,32 @@
 
 > **npm パッケージ名**:`@zhucy123/dsh-update`(2026-09-02 の公開時点で、裸の名前 `dsh-update` は第三者が 1.3KB のプレースホルダー空パッケージとして登録済みだったため scoped 名を採用。プラグイン ID と `/api/dsh-update/*` ルートプレフィックスは引き続き `dsh-update`。以下の v1.2.0 の項目にある過去のコマンドは説明目的のみ)。
 
-## v2.0.1(最新)
+## v2.0.2(最新)
+
+コードレビューで指摘された 9 件の課題（Issues #2〜#10）に対するセキュリティ境界とプロセスライフサイクルの一括強化リリースです。リポジトリ身元検証、ミラー取得時の SHA 照合、一時 `.cjs` ヘルパー化と非同期起動失敗保護、監督プロセス検出の拡張、および 16 件の実行時挙動テストを追加しました。
+
+### セキュリティ・リポジトリ境界の修正
+
+- **更新対象リポジトリの身元検証と npm 版 `@deepseek-ai/dsh` の明確な拒否**(#2)：`lib/safety.js` に `isNpmInstalledHarness` と `verifyHarnessRepo` を追加し、対象 `.git` リポジトリのルート `package.json`（`@deepseek-ai/dsh-root` / `deepseek-harness`）、`apps/cli/package.json`、または `origin` URL（`deepseek-harness`）を検証します。`/status`・`/run`・`defaultRepoDir()` で無関係な git リポジトリと npm 導入 CLI を拒否し（`allowUnverifiedRepo: true` でスキップ可能）、`lib/client.js` と 3 言語 README に `npm install -g @deepseek-ai/dsh@latest` によるアップグレード案内を表示します
+- **サードパーティミラー取得後の tag SHA 検証**(#4)：`verifyMirrorTagSha` を追加し、ミラー（明示指定または `auto` フォールバック）経由の `fetch` 後にチェックアウト前へ公式 `api.github.com` で対象 tag の commit SHA を照合します。不一致時は即座に中止してチェックアウトせず、公式 API 到達不可時は既定で警告表示後に続行、`verifyMirrorSha: true` で厳格中止します。3 言語 README にミラー経路の信頼境界を明記しました
+- **認証情報のマスクと通信の強化**(#10)：`redactSecrets` で git/pnpm 出力・`lsRemoteTags`・SSE エラー・競合詳細に含まれる `https?://user:pass@` をマスクしました。プロキシなし直結 `fetchJson` にも 2MB（`MAX_FETCH_JSON_BYTES`）上限（`Content-Length` とストリーム計測）を追加し、HTTP `CONNECT` トンネルの `tls.connect` に `ALPNProtocols: ['http/1.1']` を設定しました
+
+### 信頼性・プロセスライフサイクルの修正
+
+- **一時 `.cjs` ヘルパー化と `'spawn'` 確認後のホスト終了**(#3 / #10)：`spawnDetachedHelper` を追加し、3 つの detached helper を `node -e` ではなく `tmpdir()` 配下の一時 `.cjs` ファイル経由で起動（Windows の 32,767 文字上限を回避し、終了・失敗時に自動削除）、`'spawn'` イベント確認後にのみホストへ `SIGTERM` を送ります。非同期 `ENOENT` / `EMFILE` 失敗時は `/restart` が `restartScheduled` をリセットして HTTP `500` を返し、更新経路はロールバックと SSE エラー通知のみ行ってホストを終了しません
+- **`git describe` を `dsh-v*` に限定し未タグローカルコミットを保護**(#5)：`localVersion` を `git describe --tags --match 'dsh-v*' --abbrev=0` に変更し、無関係なタグによる「更新あり」誤判定を解消しました。`countUntaggedLocalCommits`（`/status` の `localAheadCommits`）を追加し、`dsh-v*` tag に含まれないローカルコミットが HEAD にある場合は既定でチェックアウトを拒否して detached HEAD 化を防ぎます（`allowLocalCommits: true` で許可可能）
+- **`stash: true` 後に `checkout` が失敗した場合のローカル変更復元**(#6)：`checkout` 失敗分岐（競合を含む）に `restorePreCheckoutStash` を追加し、更新前に `stash push -u` が成功していれば自動で `git stash apply` + `drop` を行います。`apply` 失敗時は stash を保持したまま手動 `git stash apply` 手順をエラー文に明記します
+- **監督プロセス検出の拡張**(#7)：`detectedSupervisor` を拡張し、`systemd`（system unit）・`systemd-user`（`NOTIFY_SOCKET` または一致する `MANAGERPID`）・`pm2`・`supervisord`・`launchd`（macOS `ppid === 1` かつ端末/SSH 外）・`container`（Docker / Kubernetes）を認識し、二重起動競合を防止します
+- **実待受ポート解決と `boot-verify` タイムアウト処理の整合**(#8)：`resolveListeningPort` を追加し、`config.port` → ホストの `webServer`/`connection` ポート → CLI `--port`/`-p` → リクエスト `Host`/URL の優先順で実ポートを取得します。両ヘルパーへ `hostPid` と `isPidAlive` チェックを導入し、60 秒後もポート使用中なら旧ホスト終了時はロールバック、旧ホスト生存時は `aborting:` ログを残して二重起動や破壊的クリーンを避けて終了します。`parseDetachedUpdateLog` で `aborting:` やビルド失敗の `reason` を `/status` に反映します
+- **`/run` の不正 JSON に対する 400 応答と既定値統一**(#9 / #10)：`handleRun` で読み取り失敗・不正 JSON・非オブジェクト JSON（配列やプリミティブ）に HTTP `400` を返すよう修正しました（空ボディと `null` は既定値互換）。`runUpdateStreaming` も `options.windowsDetachedUpdate === true` に統一しました
+
+### フロントエンド・依存関係・テスト
+
+- **fork リポジトリ対応のリリースノートリンク**(#10)：`/status` が `repoSlug` を返し、`lib/client.js` の `safeRepoSlug` で fork 先の GitHub Releases リンクを生成します
+- **`agents` への必須依存を解除**(#10)：`inject` から `agents` を外し、`countRunningAgents` が `ctx` から動的安全参照するようにしました
+- **テスト拡充**：単体テストを 53 件から **69 件**へ拡充し、#2〜#10 を検証する実行時挙動テストおよび `node:vm` クライアント描画テストを追加しました
+
+## v2.0.1
 
 本バージョンは 2 つのことを行います。**5 つの API ルートを DSH の准入チェックに接続する**(プラグインディレクトリへの掲載レビューで指摘された問題)、そして**更新/ロールバックの流れ全体を作り直す**ことです。実際のロールバックで起きていた、画面の空白、自動再読み込みの遅さ、手動で再読み込みした後に勝手にもう一度再読み込みされる問題、そしてボタンから何をしているのか分からない問題を解消します。
 

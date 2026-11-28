@@ -8,7 +8,7 @@
 
 Upgrade DSH with one click in the sidebar — no more typing out a string of git and pnpm commands.
 
-[![Version](https://img.shields.io/badge/version-2.0.1-4f8cff)](CHANGELOG.en.md)
+[![Version](https://img.shields.io/badge/version-2.0.2-4f8cff)](CHANGELOG.en.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4f8cff)](#compatibility)
 [![DSH](https://img.shields.io/badge/DSH-plugin%20%C2%B7%20web-blue)](#installation)
@@ -170,10 +170,11 @@ Chinese / English / Japanese. The language is resolved in order from `ctx.locale
 - Only one update task at a time; a duplicate trigger returns 409
 - All 5 API routes are mounted on DSH's **shared authenticated `/api` channel** (`ctx.connection.fetch.register`). The host applies its Host/Origin trust fence (anti DNS-rebinding / cross-origin) and browser login check before a request reaches the plugin — no web page open in your browser can call them. The 401/403 comes from the host, not the plugin
 - System-mutating endpoints such as `/run` and `/restart` are therefore login-gated; the plugin keeps only policy checks (supervisor / `allowRestart` / in-flight task / target-tag whitelist)
-- `POST /api/dsh-update/run` caps the request body at 64 KiB (returns 413 if exceeded) and validates that the parsed payload is a JSON object
+- `POST /api/dsh-update/run` caps the request body at 64 KiB (returns 413 if exceeded) and rejects malformed or non-object JSON with HTTP 400 (never silently falling back to empty options)
 - When turns are in progress, the force-update second confirmation preserves user options such as auto-stash (`stash`); clicking the sidebar button in the `done` / `error` state to re-check also preserves the selected network source and proxy configuration
-- Restart and background-install port probing checks both `127.0.0.1` and `::1` (IPv6 loopback)
-- Every git invocation forces `GIT_TERMINAL_PROMPT=0`; credentials are never requested interactively
+- Restart and background-install port probing resolves the host's real listening port first and checks both `127.0.0.1` and `::1` (IPv6 loopback); detached helpers execute via temporary `.cjs` files in `tmpdir()` and only send `SIGTERM` to the host after `'spawn'` succeeds
+- Every git invocation forces `GIT_TERMINAL_PROMPT=0` (credentials are never requested interactively), and embedded URL credentials (`https?://user:pass@`) in git/pnpm output and errors are redacted as `***@`
+- Both direct and proxied GitHub release-notes fetches enforce a 2MB response cap, and HTTP `CONNECT` tunnels pin `ALPNProtocols: ['http/1.1']`
 - Rollback targets must carry the `dsh-v*` prefix — arbitrary refs are rejected
 - Mirror fetches automatically verify the target tag's commit SHA against the official GitHub API (mismatches abort immediately without checking out); when the official API is unreachable, it warns and proceeds by default unless `verifyMirrorSha: true` is set (choose "Official + local proxy port" for strict trust boundaries)
 - Validates that the target directory is a `deepseek-harness` repository before checking or updating (rejecting npm-installed `@deepseek-ai/dsh` and unrelated git repos unless `allowUnverifiedRepo: true` is set), and refuses checkout when HEAD has local commits not in any `dsh-v*` tag unless `allowLocalCommits: true` is set
@@ -343,36 +344,39 @@ dsh plugin --profile web add link:$(pwd)
 ```
 
 ```
-lib/index.js                3021 lines  host side: API routes, update/rollback pipeline, stash, boot health check, HTTP CONNECT tunnel
-lib/client.js               2317 lines  browser side: sidebar button, popover, i18n (classic script, no build)
-lib/safety.js                696 lines  pure functions: tag comparison, peer conflicts, path whitelist, env cleanup
-test/update-safety.test.mjs 1778 lines  53 tests
+lib/index.js                3421 lines  host side: API routes, update/rollback pipeline, stash, boot health check, HTTP CONNECT tunnel
+lib/client.js               2329 lines  browser side: sidebar button, popover, i18n (classic script, no build)
+lib/safety.js                774 lines  pure functions: repo identity check, tag comparison, peer conflicts, path whitelist, secret redaction, env cleanup
+test/update-safety.test.mjs 2753 lines  69 tests
 icon.svg                      18 lines  plugin icon (128 grid)
 ```
 
 ```bash
 node --test test/*.test.mjs
-# ℹ tests 53 · pass 53 · fail 0
+# ℹ tests 69 · pass 69 · fail 0
 ```
 
-Note: `revision check and orphan lib deletion use a real git tree` requires creating a symlink — on Windows without Developer Mode enabled, `symlinkSync` throws `EPERM`, so it probes capability and skips automatically (52 pass / 1 skipped) rather than failing; with symlink permission or on Unix-like systems all 53 tests pass.
+Note: `revision check and orphan lib deletion use a real git tree` requires creating a symlink — on Windows without Developer Mode enabled, `symlinkSync` throws `EPERM`, so it probes capability and skips automatically (68 pass / 1 skipped) rather than failing; with symlink permission or on Unix-like systems all 69 tests pass.
 
-Several of the 53 are **runtime behavior tests** — they spawn real git subprocesses, run a rollback meant to fail, spin up a local proxy to exercise the HTTP `CONNECT` tunnel, and verify SSE streams on Fetch routes — not regexes over source:
+Several of the 69 are **runtime behavior tests** — they spawn real git subprocesses, run a rollback meant to fail, spin up a local proxy to exercise the HTTP `CONNECT` tunnel, and verify async helper spawn failures and SSE streams on Fetch routes — not regexes over source:
 
 ```
 runUpdateStreaming resolves and closes the stream on a non-git directory
 runUpdateStreaming with stash: true leaves existing stash@{0} untouched when working tree is clean
-handleRun handles "null" JSON body safely without locking the latch, and returns 413 for >64KiB body
+runUpdateStreaming restores pre-checkout stash when checkout fails after stash: true
+handleRun returns 400 for invalid JSON or non-object JSON without locking the latch
+unrelated git repository is rejected by /status and /run unless allowUnverifiedRepo is true
+verifyMirrorTagSha and mirror fetch validation block SHA mismatches and honor verifyMirrorSha
+async spawn failure on /restart returns 500, resets latch, leaves no .cjs files, and does not kill host
 performRollback reports failure instead of throwing when it cannot restore
 a git call survives a poisoned GIT_CONFIG_* environment
 fetchJson tunnels HTTPS through local HTTP CONNECT proxy (normal & chunked) and forwards HTTP GET
-/api/dsh-update/release-notes routes github+proxyPort through proxy and isolates error cache per proxyPort
 ```
 
 ### Hard constraints (read before touching the code)
 
 1. **`lib/client.js` has no build step** — it is a classic script registered through `window.__ModuleLoader__.load({ id, factory })`, and pulls in platform modules with `require("react")` internally. It can't become ESM/TS, can't use bare imports, and can't gain a bundler.
-2. **`lib/client.js` is CRLF with tab indentation** and holds **175** `tr("中文原文")` dictionary entries. Editing it requires exact matching (including `\r\n`).
+2. **`lib/client.js` is CRLF with tab indentation** and holds **177** `tr("中文原文")` dictionary entries. Editing it requires exact matching (including `\r\n`).
 3. **React is limited to `useState / useEffect / useRef / useCallback` plus `createElement` (aliased `h`)** — no JSX.
 4. **Host-side routes must go through `ctx.connection.fetch.register`** so the host authenticates them. Do not fall back to a bare `webServer.register` + a hand-rolled loopback fence — that lets any web page open in the browser trigger an update. Keep the method whitelist and `requestBody` (`streaming` for `/run`) in sync with the handler.
 
@@ -391,7 +395,7 @@ The repo standardizes on `* text=auto eol=crlf`: stored as LF inside the repo, c
 
 ## Version history
 
-Currently **v2.0.1**. See [CHANGELOG.en.md](CHANGELOG.en.md) for the full per-version history.
+Currently **v2.0.2**. See [CHANGELOG.en.md](CHANGELOG.en.md) for the full per-version history.
 
 ## Privacy
 

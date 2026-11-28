@@ -8,7 +8,7 @@
 
 サイドバーのボタンを 1 回押すだけで DSH をアップグレードできます。git や pnpm のコマンドを手打ちする必要はもうありません。
 
-[![Version](https://img.shields.io/badge/version-2.0.1-4f8cff)](CHANGELOG.ja.md)
+[![Version](https://img.shields.io/badge/version-2.0.2-4f8cff)](CHANGELOG.ja.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4f8cff)](#互換性)
 [![DSH](https://img.shields.io/badge/DSH-plugin%20%C2%B7%20web-blue)](#インストール)
@@ -170,10 +170,11 @@ pnpm install → pnpm run clean → pnpm run build
 - 同時に実行できる更新タスクは 1 つだけ。重複して起動すると 409 を返します
 - 5 つの API ルートはすべて DSH の**共有 `/api` 認証チャネル**(`ctx.connection.fetch.register`)に登録されます。ホストがプラグインに到達する前に Host/Origin 信頼フェンス(DNS rebinding / クロスオリジン対策)とブラウザのログインチェックを適用するため、ブラウザで開いている任意のウェブページから呼び出すことはできません。401/403 はプラグインではなくホストが返します
 - `/run` や `/restart` などシステムを変更するエンドポイントもログインで保護されます。プラグイン側はポリシーチェック(supervisor / `allowRestart` / 実行中タスク / ターゲットタグのホワイトリスト)のみを行います
-- `POST /api/dsh-update/run` はリクエストボディを 64 KiB 以下に制限（超過時は 413）し、解析結果が JSON オブジェクトであることを検証します
+- `POST /api/dsh-update/run` はリクエストボディを 64 KiB 以下に制限（超過時は 413）し、不正な JSON や非オブジェクト JSON には HTTP 400 を返します（空パラメータとして黙って続行しません）
 - 会話実行中の警告から「強制更新」の二次確認へ進んでも、自動 stash（`stash`）などの選択はそのまま引き継がれます。`done` / `error` 状態でサイドバーボタンを押して再確認するときも選択済みのネットワーク経路・プロキシ設定を維持します
-- 再起動およびバックグラウンド更新のポート待ち受け確認では `127.0.0.1` と `::1`（IPv6 ループバック）の両方をチェックします
-- すべての git 呼び出しで `GIT_TERMINAL_PROMPT=0` を強制し、対話的に認証情報を求めることは決してありません
+- 再起動およびバックグラウンド更新のポート待ち受け確認ではホストの実待受ポートを優先解決し、`127.0.0.1` と `::1`（IPv6 ループバック）の両方をチェックします。detached helper は `tmpdir()` の一時 `.cjs` スクリプトで起動し、`'spawn'` 確認後にのみホストへ `SIGTERM` を送ります
+- すべての git 呼び出しで `GIT_TERMINAL_PROMPT=0` を強制して対話的な認証要求を防ぎ、git/pnpm 出力やエラーに含まれる URL 内蔵認証情報（`https?://user:pass@`）は `***@` にマスクします
+- リリースノート取得は直結・プロキシ経由ともに 2MB 上限を強制し、HTTP `CONNECT` トンネルでは `ALPNProtocols: ['http/1.1']` を明示指定します
 - 切り戻し先は `dsh-v*` プレフィックスに限定し、任意の ref は拒否します
 - ミラー取得後は GitHub 公式 API で対象 tag の commit SHA を自動照合し、不一致なら即座に中止してチェックアウトしません。公式 API に到達できない場合はデフォルトでリスクを警告して続行し、`verifyMirrorSha: true` 設定時は厳格に中止します（厳格な信頼境界が必要な場合は「公式 + ローカルプロキシ」を利用してください）
 - 確認および更新前に対象ディレクトリが `deepseek-harness` リポジトリであることを検証し、npm 版 `@deepseek-ai/dsh` や無関係な git プロジェクトを拒否します（`allowUnverifiedRepo: true` でスキップ可能）。また `dsh-v*` tag に含まれないローカルコミットが HEAD にある場合もデフォルトでチェックアウトを拒否します（`allowLocalCommits: true` で許可可能）
@@ -343,36 +344,39 @@ dsh plugin --profile web add link:$(pwd)
 ```
 
 ```
-lib/index.js                3021 行  host 側：API ルート、更新／切り戻しのパイプライン、stash、起動ヘルスチェック、HTTP CONNECT トンネル
-lib/client.js               2317 行  ブラウザ側：サイドバーのボタン、ポップオーバー、i18n（classic script、ビルド無し）
-lib/safety.js                696 行  純粋関数：tag 比較、peer 競合、パスのホワイトリスト、環境のクリーンアップ
-test/update-safety.test.mjs 1778 行  53 件のテスト
+lib/index.js                3421 行  host 側：API ルート、更新／切り戻しのパイプライン、stash、起動ヘルスチェック、HTTP CONNECT トンネル
+lib/client.js               2329 行  ブラウザ側：サイドバーのボタン、ポップオーバー、i18n（classic script、ビルド無し）
+lib/safety.js                774 行  純粋関数：リポジトリ身元検証、tag 比較、peer 競合、パスのホワイトリスト、認証情報マスク、環境のクリーンアップ
+test/update-safety.test.mjs 2753 行  69 件のテスト
 icon.svg                      18 行  プラグインアイコン（128 グリッド）
 ```
 
 ```bash
 node --test test/*.test.mjs
-# ℹ tests 53 · pass 53 · fail 0
+# ℹ tests 69 · pass 69 · fail 0
 ```
 
-なお、`revision check and orphan lib deletion use a real git tree` はシンボリックリンクの作成が必要なため、Windows で開発者モードが無効な環境では権限をプローブして自動スキップ（52 pass / 1 skipped）されます（故障ではありません）。権限が有効な環境や Unix 系環境では 53 件すべてが通過します。
+なお、`revision check and orphan lib deletion use a real git tree` はシンボリックリンクの作成が必要なため、Windows で開発者モードが無効な環境では権限をプローブして自動スキップ（68 pass / 1 skipped）されます（故障ではありません）。権限が有効な環境や Unix 系環境では 69 件すべてが通過します。
 
-53 件のうち一部は**実行時の挙動テスト**（実際に git の子プロセスを起動し、必ず失敗するロールバックを走らせ、ローカルプロキシを立てて HTTP `CONNECT` トンネルや Fetch route の SSE ストリーミングを検証する など）で、ソースの正規表現だけではありません。
+69 件のうち一部は**実行時の挙動テスト**（実際に git の子プロセスを起動し、必ず失敗するロールバックを走らせ、ローカルプロキシを立てて HTTP `CONNECT` トンネルや Fetch route の SSE ストリーミング、helper 非同期起動失敗時の挙動を検証する など）で、ソースの正規表現だけではありません。
 
 ```
 runUpdateStreaming resolves and closes the stream on a non-git directory
 runUpdateStreaming with stash: true leaves existing stash@{0} untouched when working tree is clean
-handleRun handles "null" JSON body safely without locking the latch, and returns 413 for >64KiB body
+runUpdateStreaming restores pre-checkout stash when checkout fails after stash: true
+handleRun returns 400 for invalid JSON or non-object JSON without locking the latch
+unrelated git repository is rejected by /status and /run unless allowUnverifiedRepo is true
+verifyMirrorTagSha and mirror fetch validation block SHA mismatches and honor verifyMirrorSha
+async spawn failure on /restart returns 500, resets latch, leaves no .cjs files, and does not kill host
 performRollback reports failure instead of throwing when it cannot restore
 a git call survives a poisoned GIT_CONFIG_* environment
 fetchJson tunnels HTTPS through local HTTP CONNECT proxy (normal & chunked) and forwards HTTP GET
-/api/dsh-update/release-notes routes github+proxyPort through proxy and isolates error cache per proxyPort
 ```
 
 ### コード変更前に必読のハード制約
 
 1. **`lib/client.js` にビルド手順はありません**——classic script で、`window.__ModuleLoader__.load({ id, factory })` により登録され、内部で `require("react")` してプラットフォームのモジュールを取得します。ESM/TS に変えることはできず、裸の import もバンドラーも使えません。
-2. **`lib/client.js` は CRLF + タブインデント**で、**175** 個の `tr("中文原文")` 辞書項目を含みます。変更するときは完全一致（`\r\n` を含む）で行う必要があります。
+2. **`lib/client.js` は CRLF + タブインデント**で、**177** 個の `tr("中文原文")` 辞書項目を含みます。変更するときは完全一致（`\r\n` を含む）で行う必要があります。
 3. **React は `useState / useEffect / useRef / useCallback` + `createElement`（別名 `h`）だけ**を使い、JSX は使いません。
 4. **host 側のルートは必ず `ctx.connection.fetch.register` を使う**こと。ホストによる認証を受けます。裸の `webServer.register` + 自作 loopback fence に戻すと、ブラウザで開いている任意のページから更新を起動できてしまいます。メソッドのホワイトリストと `requestBody`(`/run` は `streaming`)はハンドラと一致させてください。
 
@@ -391,7 +395,7 @@ fetchJson tunnels HTTPS through local HTTP CONNECT proxy (normal & chunked) and 
 
 ## バージョン履歴
 
-現在 **v2.0.1**。バージョンごとの完全な記録は [CHANGELOG.ja.md](CHANGELOG.ja.md) を参照してください。
+現在 **v2.0.2**。バージョンごとの完全な記録は [CHANGELOG.ja.md](CHANGELOG.ja.md) を参照してください。
 
 ## プライバシー
 
