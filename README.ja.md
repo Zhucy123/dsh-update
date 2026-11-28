@@ -87,6 +87,8 @@
 
 プロキシポートが空なら直接接続です。「公式 + ローカルプロキシポート」を選んだ場合は**全工程で有効**になり、バージョン確認（`git ls-remote`）や更新／切り戻し時の取得（`git fetch`）だけでなく、Node 標準の `node:http` / `node:tls` による HTTP `CONNECT` トンネルを通じて `/api/dsh-update/release-notes` のリリースノート取得にも適用されます。
 
+サードパーティ製ミラー（`gh-proxy.com` / `ghproxy.net` / `ghfast.top` または `gitProxy`）経由で取得した後は、自動的に GitHub 公式 API で対象 tag の commit SHA を照合します（不一致の場合は即座に中止し、チェックアウトしません）。公式 API に到達できない場合、デフォルトではリスクを警告したうえで続行します（そのミラーへの信頼に依存します）。厳格な検証が必要な場合は `verifyMirrorSha: true` を有効にするか、信頼境界を重視する場合は「公式 + ローカルプロキシ」を選択してください。
+
 ### 自動チェック
 
 デフォルトで有効、6 時間ごとに確認し、1 / 6 / 12 / 24 時間から選べます。`dsh web` の起動時にも毎回 1 回確認します。バックグラウンドで新バージョンを見つけてもボタンの見た目が変わるだけで、ダイアログも出さず作業も中断しません。失敗した場合は黙ってミラーを切り替えて再試行します。
@@ -124,7 +126,7 @@ pnpm install → pnpm run clean → pnpm run build
 - ポーリングはデフォルトで 90 秒。バックグラウンド分離モードではより長い猶予が渡されます
 - 猶予を超えたら待つのをやめ、制御をあなたに返します。無限ループに閉じ込めることはしません
 - 自動再起動が効かない場合（設定で無効になっているなど）は、完了パネルに「再起動に失敗しました。手動で再起動してください」と表示され、隣の「今すぐ再起動」で 1 回だけやり直せます
-- systemd などの supervisor 管理下であること、または `allowRestart: false` が設定されていることを検出した場合は自動再起動を行わず、ポーリングもしません
+- system/user systemd、PM2、supervisord、macOS launchd、コンテナなどの supervisor 管理下であること、または `allowRestart: false` が設定されていることを検出した場合は自動再起動を行わず、ポーリングもしません
 
 ### 4つのセーフティゲート
 
@@ -173,6 +175,8 @@ pnpm install → pnpm run clean → pnpm run build
 - 再起動およびバックグラウンド更新のポート待ち受け確認では `127.0.0.1` と `::1`（IPv6 ループバック）の両方をチェックします
 - すべての git 呼び出しで `GIT_TERMINAL_PROMPT=0` を強制し、対話的に認証情報を求めることは決してありません
 - 切り戻し先は `dsh-v*` プレフィックスに限定し、任意の ref は拒否します
+- ミラー取得後は GitHub 公式 API で対象 tag の commit SHA を自動照合し、不一致なら即座に中止してチェックアウトしません。公式 API に到達できない場合はデフォルトでリスクを警告して続行し、`verifyMirrorSha: true` 設定時は厳格に中止します（厳格な信頼境界が必要な場合は「公式 + ローカルプロキシ」を利用してください）
+- 確認および更新前に対象ディレクトリが `deepseek-harness` リポジトリであることを検証し、npm 版 `@deepseek-ai/dsh` や無関係な git プロジェクトを拒否します（`allowUnverifiedRepo: true` でスキップ可能）。また `dsh-v*` tag に含まれないローカルコミットが HEAD にある場合もデフォルトでチェックアウトを拒否します（`allowLocalCommits: true` で許可可能）
 - DSH `>=0.2.3`(アルファ含む)が必要です。共有 `/api` の准入モデルは 0.2.3 で安定しました。`engines.dsh: ">=0.2.3-0"` により `0.2.3-alpha.*` も満たします
 
 ## インストール
@@ -227,7 +231,7 @@ plugins:
 |---|---|---|---|
 | `repoDir` | `DSH_UPDATE_REPO_DIR` | 更新対象リポジトリのルート（git checkout であること） | `process.cwd()` から上へ辿り、最初に見つかった `.git` を含むディレクトリ |
 | `gitProxy` | `DSH_UPDATE_GIT_PROXY` | 直結に失敗したときのミラープレフィックス。`""` でミラーへのフォールバックを無効化 | `https://gh-proxy.com/` |
-| `allowRestart` | — | 自己再起動を許可するか。systemd などの supervisor を検出すると自動で無効化 | `true` |
+| `allowRestart` | — | 自己再起動を許可するか。system/user systemd、PM2、supervisord、macOS launchd、コンテナなどの supervisor を検出すると自動で無効化 | `true` |
 | `autoRestart` | — | 更新 / 切り戻しの成功後に約 2 秒で自動再起動し、新プロセスの準備完了を待ってからページを更新するか | `true` |
 | `windowsDetachedUpdate` | — | Windows でのバックグラウンド分離更新。後述 | `false` |
 | `requiredPaths` | `DSH_UPDATE_REQUIRED_PATHS` | チェックアウト前にターゲット tag へ存在していなければならない相対パス。空配列 = チェック無効 | `["packages/client/ui-context-menu/package.json"]` |
@@ -236,6 +240,9 @@ plugins:
 | `peerConflictPolicy` | — | `confirm`（一覧を出して確認）/ `block`（即座に拒否）/ `ignore`（ログのみ） | `confirm` |
 | `profilesDir` | `DSH_UPDATE_PROFILES_DIR` | プラグインの peer を走査する profile のルート | `~/.dsh/profiles` |
 | `bootHealthWindowMs` | — | ポートが上がった後に起動ログを観測し続けるミリ秒数（0–120000）。自動再起動が無効ならこのチェックは行わない | `15000` |
+| `verifyMirrorSha` | — | `true` の場合、ミラー取得後に GitHub 公式 API で tag の SHA を照合できないと更新を中止します（SHA 不一致は常に中止） | `false` |
+| `allowLocalCommits` | — | `true` の場合、`dsh-v*` tag に含まれないローカルコミットが HEAD にあってもチェックアウトを続行します | `false` |
+| `allowUnverifiedRepo` | — | `true` の場合、`deepseek-harness` リポジトリの同一性検証をスキップします | `false` |
 
 ### Windows でのバックグラウンド分離更新
 
@@ -292,11 +299,11 @@ flowchart TD
 - パスはすべて `node:path` を経由し、区切り文字をハードコードしません
 - ポート監視（再起動およびバックグラウンド更新）は `127.0.0.1` と `::1` の両方をチェックします
 - POSIX の再起動は `detached: true` で新プロセスを独立セッションにするため、起動元のターミナルを閉じてもサービスは止まりません。出力は tmpdir のログへリダイレクトされます
-- systemd 管理下では自己再起動を自動で無効化（起動は supervisor が担当）。launchd など未検出のケースはデフォルトで許可
+- system/user systemd、PM2、supervisord、macOS launchd および Docker/コンテナ管理下を自動識別して自己再起動を無効化します（二重起動によるポート競合を防止）。明示的に上書きする場合は `allowRestart: true` を設定してください
 
 **要件**：
 
-- DSH がソース方式で動作していること——clone した deepseek-harness リポジトリで、origin に `dsh-v*` リリースタグがあること
+- DSH がソース方式で動作していること——clone した `deepseek-harness` リポジトリで、origin に `dsh-v*` リリースタグがあること。npm でグローバル／ローカルインストールされた `@deepseek-ai/dsh` CLI は npm（例：`npm install -g @deepseek-ai/dsh@latest`）でアップグレードしてください。本プラグインは確認およびチェックアウト前に対象ディレクトリが `deepseek-harness` リポジトリであることを検証し、無関係な git プロジェクトへの誤操作を拒否します
 - Node.js ≥ 18、git、pnpm
 
 ## トラブルシューティング

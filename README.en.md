@@ -87,6 +87,8 @@ The top of the popover lets you switch the connection path on the fly; the choic
 
 An empty proxy port means a direct connection. Choosing "Official + local proxy port" applies **end-to-end**: not only to version checks (`git ls-remote`) and update/rollback fetches (`git fetch`), but also to `/api/dsh-update/release-notes` when fetching GitHub release notes, via an HTTP `CONNECT` tunnel built on Node's `node:http` / `node:tls`.
 
+After fetching via a third-party mirror (`gh-proxy.com` / `ghproxy.net` / `ghfast.top` or `gitProxy`), the plugin automatically verifies the target tag's commit SHA against the official GitHub API (and aborts immediately without checking out if they differ). If the official API is unreachable, it warns about the risk and proceeds by default (relying on trust in that mirror); set `verifyMirrorSha: true` to require strict verification, or choose "Official + local proxy port" when strict trust boundaries are required.
+
 ### Automatic checks
 
 On by default, once every 6 hours, with 1 / 6 / 12 / 24 hour options. Every `dsh web` start also triggers one check. A background check that finds a new version only changes how the button looks — no dialog, no interruption; a failure quietly falls back to the next mirror.
@@ -124,7 +126,7 @@ In practice the window where the page is truly unusable is much shorter than it 
 - Polling runs for 90 seconds by default; detached background mode hands out a longer window
 - Once the window is over it stops waiting and gives control back to you, rather than locking you into a loop
 - If the automatic restart doesn't happen (disabled in the config, say), the completion panel shows "Restart failed, please restart manually", and the "Restart now" button beside it retries once
-- When a supervisor such as systemd is detected, or `allowRestart: false` is set, there is no automatic restart and therefore no polling
+- When a supervisor (system/user systemd, PM2, supervisord, macOS launchd, or Docker/containers) is detected, or `allowRestart: false` is set, there is no automatic restart and therefore no polling
 
 ### Four safety gates
 
@@ -173,6 +175,8 @@ Chinese / English / Japanese. The language is resolved in order from `ctx.locale
 - Restart and background-install port probing checks both `127.0.0.1` and `::1` (IPv6 loopback)
 - Every git invocation forces `GIT_TERMINAL_PROMPT=0`; credentials are never requested interactively
 - Rollback targets must carry the `dsh-v*` prefix — arbitrary refs are rejected
+- Mirror fetches automatically verify the target tag's commit SHA against the official GitHub API (mismatches abort immediately without checking out); when the official API is unreachable, it warns and proceeds by default unless `verifyMirrorSha: true` is set (choose "Official + local proxy port" for strict trust boundaries)
+- Validates that the target directory is a `deepseek-harness` repository before checking or updating (rejecting npm-installed `@deepseek-ai/dsh` and unrelated git repos unless `allowUnverifiedRepo: true` is set), and refuses checkout when HEAD has local commits not in any `dsh-v*` tag unless `allowLocalCommits: true` is set
 - Requires DSH `>=0.2.3` (alphas included); the shared `/api` admission model stabilised in 0.2.3. `engines.dsh: ">=0.2.3-0"` lets `0.2.3-alpha.*` satisfy it
 
 ## Installation
@@ -227,7 +231,7 @@ plugins:
 |---|---|---|---|
 | `repoDir` | `DSH_UPDATE_REPO_DIR` | Root of the repo to update (must be a git checkout) | The first directory containing `.git` walking up from `process.cwd()` |
 | `gitProxy` | `DSH_UPDATE_GIT_PROXY` | Mirror prefix used after a direct connection fails; `""` disables mirror fallback | `https://gh-proxy.com/` |
-| `allowRestart` | — | Whether self-restart is allowed; automatically disabled when a supervisor such as systemd is detected | `true` |
+| `allowRestart` | — | Whether self-restart is allowed; automatically disabled when a supervisor (system/user systemd, PM2, supervisord, macOS launchd, container) is detected | `true` |
 | `autoRestart` | — | Whether to restart ~2 seconds after a successful update / rollback and refresh the page once the new process is ready | `true` |
 | `windowsDetachedUpdate` | — | Detached background update on Windows, see below | `false` |
 | `requiredPaths` | `DSH_UPDATE_REQUIRED_PATHS` | Relative paths that must exist in the target tag before checkout. An empty array disables the check | `["packages/client/ui-context-menu/package.json"]` |
@@ -236,6 +240,9 @@ plugins:
 | `peerConflictPolicy` | — | `confirm` (list, then confirm) / `block` (reject outright) / `ignore` (log only) | `confirm` |
 | `profilesDir` | `DSH_UPDATE_PROFILES_DIR` | Profile root scanned for plugin peers | `~/.dsh/profiles` |
 | `bootHealthWindowMs` | — | Milliseconds to keep watching the startup log after the port comes up (0–120000). Skipped when automatic restart is off | `15000` |
+| `verifyMirrorSha` | — | When `true`, abort the update after a mirror fetch if the tag SHA cannot be verified against the official GitHub API (mismatches always abort) | `false` |
+| `allowLocalCommits` | — | When `true`, allow checkout to proceed when HEAD has local commits not included in any `dsh-v*` tag | `false` |
+| `allowUnverifiedRepo` | — | When `true`, skip the `deepseek-harness` repository identity check | `false` |
 
 ### Detached updates on Windows
 
@@ -292,11 +299,11 @@ flowchart TD
 - Every path goes through `node:path`; no hard-coded separators
 - Port probing (for restart and detached background updates) checks both `127.0.0.1` and `::1`
 - On POSIX the restart uses `detached: true` so the new process becomes its own session — closing the terminal that launched it doesn't affect the service, and output is redirected to a log in tmpdir
-- Self-restart is disabled automatically under systemd (the supervisor takes care of it); unrecognized setups such as launchd are allowed by default
+- Recognizes system/user systemd, PM2, supervisord, macOS launchd, and Docker/container supervision and disables self-restart automatically (preventing two instances from racing to bind the port); set `allowRestart: true` explicitly to override
 
 **Requirements**:
 
-- DSH running from source — a cloned deepseek-harness repo whose origin carries `dsh-v*` release tags
+- DSH running from source — a cloned `deepseek-harness` repository whose origin carries `dsh-v*` release tags. Global or local npm installs of `@deepseek-ai/dsh` should be upgraded with npm (e.g. `npm install -g @deepseek-ai/dsh@latest`); the plugin checks that the target directory is a `deepseek-harness` repository before checking or checking out, refusing unrelated git projects
 - Node.js ≥ 18, git, pnpm
 
 ## Troubleshooting

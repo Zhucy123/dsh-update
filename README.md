@@ -85,6 +85,8 @@
 
 代理端口留空就是直连。选「官方 + 本地代理端口」时现在**全程生效**：不仅覆盖版本检查（`git ls-remote`）与更新/回退拉取（`git fetch`），也通过 Node 内置 `node:http` / `node:tls` 的 HTTP `CONNECT` 隧道覆盖 `/api/dsh-update/release-notes` 拉取 GitHub 发布说明。
 
+经第三方镜像站（`gh-proxy.com` / `ghproxy.net` / `ghfast.top` 或 `gitProxy`）拉取后，插件会自动向 GitHub 官方 API 核对目标 tag 的 commit SHA（不一致立即中止，绝不检出）；若官方 API 不可达，默认提示风险并继续（此时依赖对该第三方镜像的信任），如要求强制核验可开启 `verifyMirrorSha: true`；对信任边界要求严格时请选用「官方 + 本地代理」。
+
 ### 自动检查
 
 默认开启，每 6 小时查一次，可选 1 / 6 / 12 / 24 小时。每次 `dsh web` 启动也会查一次。后台查到新版本只改按钮外观，不弹窗、不打断你；失败会静默换镜像重试。
@@ -122,7 +124,7 @@ pnpm install → pnpm run clean → pnpm run build
 - 轮询默认 90 秒（后台分离模式会下发更长的窗口）；重启空窗期连不上 `/ping` 属正常，继续轮询
 - 超过窗口就不再等，把控制权交回给你，不把你锁在死循环里
 - 自动重启没生效时（比如配置里关了），完成面板会显示「重启失败，请手动重启」，旁边的「立即重启」可以补一次
-- 检测到 systemd 等 supervisor 托管、或设了 `allowRestart: false` 时不做自动重启，也就不轮询
+- 检测到 system/user systemd、PM2、supervisord、macOS launchd、容器等 supervisor 托管、或设了 `allowRestart: false` 时不做自动重启，也就不轮询
 
 ### 四个安全闸门
 
@@ -171,6 +173,8 @@ pnpm install → pnpm run clean → pnpm run build
 - 重启与后台安装探测监听端口时同时检查 `127.0.0.1` 与 `::1`（IPv6 回环）
 - 所有 git 调用强制 `GIT_TERMINAL_PROMPT=0`，绝不交互式要凭据
 - 回退目标必须是 `dsh-v*` 前缀，拒绝任意 ref
+- 镜像拉取后自动向 GitHub 官方 API 核对目标 tag 的 commit SHA（不一致立即中止，绝不检出）；官方 API 不可达时默认提示风险并继续，配置 `verifyMirrorSha: true` 时改为严格中止（对信任边界要求严格时请选用「官方 + 本地代理」）
+- 检查与更新前校验目标目录是否为 `deepseek-harness` 仓库（并拒绝 npm 安装的 `@deepseek-ai/dsh`，除非配置 `allowUnverifiedRepo: true`）；HEAD 存在未打 `dsh-v*` tag 的本地提交时默认拒绝检出（除非配置 `allowLocalCommits: true`）
 - 需要 DSH `>=0.2.3`（含 alpha），因为该版本起共享 `/api` 通道的准入模型才稳定；`engines.dsh: ">=0.2.3-0"` 覆盖 `0.2.3-alpha.*`
 
 ## 安装
@@ -225,7 +229,7 @@ plugins:
 |---|---|---|---|
 | `repoDir` | `DSH_UPDATE_REPO_DIR` | 要更新的仓库根目录（必须是 git checkout） | 从 `process.cwd()` 向上找第一个含 `.git` 的目录 |
 | `gitProxy` | `DSH_UPDATE_GIT_PROXY` | 直连失败后的镜像前缀；`""` 关闭镜像回退 | `https://gh-proxy.com/` |
-| `allowRestart` | — | 是否允许自重启；检测到 systemd 等 supervisor 时自动禁用 | `true` |
+| `allowRestart` | — | 是否允许自重启；检测到 system/user systemd、PM2、supervisord、macOS launchd、容器等 supervisor 时自动禁用 | `true` |
 | `autoRestart` | — | 更新 / 回退成功后是否约 2 秒自动重启并等新进程就绪后刷新页面 | `true` |
 | `windowsDetachedUpdate` | — | Windows 后台分离更新，见下 | `false` |
 | `requiredPaths` | `DSH_UPDATE_REQUIRED_PATHS` | 检出前必须存在于目标 tag 的相对路径。空数组 = 关闭检查 | `["packages/client/ui-context-menu/package.json"]` |
@@ -234,6 +238,9 @@ plugins:
 | `peerConflictPolicy` | — | `confirm`（列出后确认）/ `block`（直接拒绝）/ `ignore`（只记日志） | `confirm` |
 | `profilesDir` | `DSH_UPDATE_PROFILES_DIR` | 扫描插件 peer 的 profile 根目录 | `~/.dsh/profiles` |
 | `bootHealthWindowMs` | — | 端口起来后继续观察启动日志的毫秒数（0–120000）。自动重启关闭时不做这项检查 | `15000` |
+| `verifyMirrorSha` | — | `true` 时镜像拉取后若无法向 GitHub 官方 API 核验 tag SHA 则中止更新（SHA 不一致始终中止） | `false` |
+| `allowLocalCommits` | — | `true` 时允许在 HEAD 存在未打 `dsh-v*` tag 的本地提交时继续检出 | `false` |
+| `allowUnverifiedRepo` | — | `true` 时跳过 `deepseek-harness` 仓库身份校验 | `false` |
 
 ### Windows 后台分离更新
 
@@ -292,11 +299,11 @@ flowchart TD
 - 路径统一经 `node:path`，不写死分隔符
 - 端口探测（重启与后台更新）同时检查 `127.0.0.1` 与 `::1`
 - POSIX 重启用 `detached: true` 让新进程成为独立会话，关掉启动它的终端不影响服务，输出重定向到 tmpdir 日志
-- systemd 托管时自动禁用自重启（由 supervisor 负责拉起）；launchd 等未识别场景默认允许
+- 已识别 system/user systemd、PM2、supervisord、macOS launchd 及 Docker/容器托管并自动禁用自重启（避免双实例抢拉起）；如确需覆盖可显式设置 `allowRestart: true`
 
 **要求**：
 
-- DSH 以源码方式运行——一个 clone 下来的 deepseek-harness 仓库，origin 上带 `dsh-v*` 发布 tag
+- DSH 以源码方式运行——一个 clone 下来的 `deepseek-harness` 仓库，origin 上带 `dsh-v*` 发布 tag；通过 npm 全局或本地安装的 `@deepseek-ai/dsh` CLI 应使用 npm 升级（如 `npm install -g @deepseek-ai/dsh@latest`），本插件会在检查和检出前校验目标目录是否为 `deepseek-harness` 仓库，拒绝误操作无关 git 项目
 - Node.js ≥ 18、git、pnpm
 
 ## 排障

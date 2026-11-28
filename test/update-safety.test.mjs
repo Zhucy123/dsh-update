@@ -13,6 +13,7 @@ import {
   bootLogFailureReason,
   compareTags,
   harnessVersionFromTag,
+  isNpmInstalledHarness,
   isSafeRepoRelPath,
   isWhitelistedPackageRel,
   latestEligibleTag,
@@ -21,15 +22,37 @@ import {
   packageDirsFromListing,
   peerConflictMessages,
   peerConflictsInManifest,
+  redactSecrets,
   removeOrphanLibsOnDisk,
   resolveRequiredPaths,
   revisionHasPath,
   scanProfilePeerConflicts,
   semverSatisfies,
   tagHealthMessages,
+  verifyHarnessRepo,
   DEFAULT_REQUIRED_PATHS,
 } from '../lib/safety.js'
-import { apply, UPDATE_PATHS, inject, bootVerifyHelperSource, updateHelperSource, sanitizeGitEnv, runUpdateStreaming, fetchJson } from '../lib/index.js'
+import {
+  apply,
+  UPDATE_PATHS,
+  inject,
+  bootVerifyHelperSource,
+  updateHelperSource,
+  restartHelperSource,
+  spawnDetachedHelper,
+  scheduleDetachedUpdate,
+  scheduleBootVerify,
+  detectedSupervisor,
+  restartAllowed,
+  resolveListeningPort,
+  parseDetachedUpdateLog,
+  sanitizeGitEnv,
+  runUpdateStreaming,
+  fetchJson,
+  checkStatus,
+  verifyMirrorTagSha,
+  countUntaggedLocalCommits,
+} from '../lib/index.js'
 // 同一份判据也必须覆盖 safety.js 自己那份 GIT_ENV（它独立于 index.js）。
 import { sanitizeGitEnv as sanitizeGitEnvFromSafety } from '../lib/safety.js'
 
@@ -1071,7 +1094,7 @@ function setupOriginAndLocalRepos() {
   git(originDir, ['init'])
   writeFileSync(
     join(originDir, 'package.json'),
-    JSON.stringify({ name: 'tmp-dsh', version: '0.1.0', private: true, scripts: { clean: 'node -e ""', build: 'node -e ""' } }) + '\n',
+    JSON.stringify({ name: '@deepseek-ai/dsh-root', version: '0.1.0', private: true, scripts: { clean: 'node -e ""', build: 'node -e ""' } }) + '\n',
   )
   writeFileSync(join(originDir, 'notes.txt'), 'v1\n')
   git(originDir, ['add', '.'])
@@ -1082,7 +1105,7 @@ function setupOriginAndLocalRepos() {
 
   writeFileSync(
     join(originDir, 'package.json'),
-    JSON.stringify({ name: 'tmp-dsh', version: '0.2.0', private: true, scripts: { clean: 'node -e ""', build: 'node -e ""' } }) + '\n',
+    JSON.stringify({ name: '@deepseek-ai/dsh-root', version: '0.2.0', private: true, scripts: { clean: 'node -e ""', build: 'node -e ""' } }) + '\n',
   )
   writeFileSync(join(originDir, 'notes.txt'), 'v2\n')
   git(originDir, ['add', '.'])
@@ -1223,6 +1246,7 @@ test('/status, /release-notes, servingPort URL port, and no-port helper sources 
   const helperDir = mkdtempSync(join(tmpdir(), 'dsh-helper-noport-'))
   try {
     git(root, ['init'])
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-root' }) + '\n')
     writeFileSync(join(root, 'a.txt'), '1\n')
     git(root, ['add', '.'])
     git(root, ['commit', '-m', 'init'])
@@ -1775,4 +1799,955 @@ test('/api/dsh-update/release-notes routes github+proxyPort through proxy and is
     await Promise.all([closeServer(proxyA.srv), closeServer(proxyB.srv)])
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+// ---- Issues #2, #4, #5, #6, #9, #10 backend security & git fixes ------------
+
+function withPnpmShim(binDir, fn) {
+  mkdirSync(binDir, { recursive: true })
+  writeFileSync(join(binDir, 'pnpm.cmd'), '@echo off\r\nexit /b 0\r\n')
+  const posixShim = join(binDir, 'pnpm')
+  writeFileSync(posixShim, '#!/bin/sh\nexit 0\n')
+  chmodSync(posixShim, 0o755)
+  const prevPath = process.env.PATH ?? ''
+  process.env.PATH = `${binDir}${delimiter}${prevPath}`
+  return Promise.resolve().then(fn).finally(() => {
+    process.env.PATH = prevPath
+  })
+}
+
+test('isNpmInstalledHarness and verifyHarnessRepo validate repo identity and reject npm/unrelated repos', () => {
+  assert.equal(isNpmInstalledHarness('/usr/local/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js'), true)
+  assert.equal(isNpmInstalledHarness('C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\@deepseek-ai\\dsh-cli\\dist\\index.js'), true)
+  assert.equal(isNpmInstalledHarness('/home/user/deepseek-harness/apps/cli/src/index.js'), false)
+  assert.equal(isNpmInstalledHarness(''), false)
+
+  const base = mkdtempSync(join(tmpdir(), 'dsh-verify-repo-'))
+  try {
+    const nonGit = join(base, 'non-git')
+    mkdirSync(nonGit, { recursive: true })
+    assert.deepEqual(verifyHarnessRepo(nonGit), {
+      ok: false,
+      code: 'not-git',
+      error: `not a git checkout: ${nonGit}`,
+    })
+    const npmNonGit = verifyHarnessRepo(nonGit, { isNpmInstall: true })
+    assert.equal(npmNonGit.ok, false)
+    assert.equal(npmNonGit.code, 'npm-install')
+
+    // Official root package.json names
+    for (const pkgName of ['@deepseek-ai/dsh-root', 'deepseek-harness']) {
+      const dir = join(base, pkgName.replace(/[^a-z0-9]/gi, '_'))
+      mkdirSync(join(dir, '.git'), { recursive: true })
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: pkgName }))
+      assert.equal(verifyHarnessRepo(dir).ok, true, `${pkgName} should pass`)
+    }
+
+    // apps/cli/package.json names
+    for (const cliName of ['@deepseek-ai/dsh', '@deepseek-ai/dsh-cli']) {
+      const dir = join(base, 'cli-' + cliName.replace(/[^a-z0-9]/gi, '_'))
+      mkdirSync(join(dir, '.git'), { recursive: true })
+      mkdirSync(join(dir, 'apps', 'cli'), { recursive: true })
+      writeFileSync(join(dir, 'apps', 'cli', 'package.json'), JSON.stringify({ name: cliName }))
+      assert.equal(verifyHarnessRepo(dir).ok, true, `cli ${cliName} should pass`)
+    }
+
+    // Fork origin URL
+    const forkDir = join(base, 'fork-repo')
+    mkdirSync(join(forkDir, '.git'), { recursive: true })
+    writeFileSync(join(forkDir, 'package.json'), JSON.stringify({ name: 'custom-fork' }))
+    assert.equal(verifyHarnessRepo(forkDir, { originUrl: 'https://github.com/someone/deepseek-harness.git' }).ok, true)
+    assert.equal(verifyHarnessRepo(forkDir, { originUrl: 'git@github.com:someone/deepseek-harness' }).ok, true)
+
+    // Unrelated git repo
+    const otherDir = join(base, 'unrelated')
+    mkdirSync(join(otherDir, '.git'), { recursive: true })
+    writeFileSync(join(otherDir, 'package.json'), JSON.stringify({ name: 'my-other-app' }))
+    const bad = verifyHarnessRepo(otherDir, { originUrl: 'https://github.com/someone/other-repo.git' })
+    assert.equal(bad.ok, false)
+    assert.equal(bad.code, 'not-harness-repo')
+
+    const badNpm = verifyHarnessRepo(otherDir, { originUrl: 'https://github.com/someone/other-repo.git', isNpmInstall: true })
+    assert.equal(badNpm.ok, false)
+    assert.equal(badNpm.code, 'npm-install')
+    assert.match(badNpm.error, /npm install -g @deepseek-ai\/dsh@latest/)
+
+    // Explicit allowUnverifiedRepo bypass
+    assert.equal(verifyHarnessRepo(otherDir, { allowUnverifiedRepo: true }).ok, true)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('unrelated git repository is rejected by /status and /run unless allowUnverifiedRepo is true', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'dsh-unrelated-runtime-'))
+  const originDir = join(base, 'origin')
+  const localDir = join(base, 'local')
+  try {
+    mkdirSync(originDir, { recursive: true })
+    git(originDir, ['init'])
+    writeFileSync(join(originDir, 'package.json'), JSON.stringify({ name: 'unrelated-project' }) + '\n')
+    git(originDir, ['add', '.'])
+    git(originDir, ['commit', '-m', 'init'])
+    git(originDir, ['tag', 'dsh-v0.1.0'])
+    git(base, ['clone', '-q', originDir, localDir])
+
+    // Default: /status and /run reject unrelated git repo without fetching or checking out
+    const { ctx, routes } = mockCtx()
+    apply(ctx, { repoDir: localDir, autoRestart: false })
+    const statusRes = await routes.get(UPDATE_PATHS.status).fetch(
+      new Request('http://localhost' + UPDATE_PATHS.status, { method: 'GET' }),
+    )
+    const statusBody = await statusRes.json()
+    assert.equal(statusBody.ok, false)
+    assert.equal(statusBody.errorCode, 'not-harness-repo')
+
+    const runRes = await routes.get(UPDATE_PATHS.run).fetch(
+      new Request('http://localhost' + UPDATE_PATHS.run, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }),
+    )
+    const runEvents = (await runRes.text()).split('\n').map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l))
+    assert.equal(runEvents.some((e) => e.type === 'step' && /Fetching tags/.test(e.text)), false)
+    const done = runEvents.find((e) => e.type === 'done')
+    assert.ok(done !== undefined && done.ok === false)
+    assert.match(done.error, /not a deepseek-harness source repository/i)
+    await ctx._dispose()
+
+    // allowUnverifiedRepo: true skips repo identity check
+    const allowed = await checkStatus(localDir, { repoDir: localDir, allowUnverifiedRepo: true })
+    assert.equal(allowed.ok, true)
+    assert.equal(allowed.localTag, 'dsh-v0.1.0')
+
+    // npm-installed argv1 rejects even inside an unrelated git repo when repoDir is not explicit
+    const prevArgv1 = process.argv[1]
+    const prevEnvRepo = process.env.DSH_UPDATE_REPO_DIR
+    delete process.env.DSH_UPDATE_REPO_DIR
+    process.argv[1] = '/usr/local/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js'
+    try {
+      const npmRejected = await checkStatus(localDir, undefined)
+      assert.equal(npmRejected.ok, false)
+      assert.equal(npmRejected.errorCode, 'npm-install')
+    } finally {
+      process.argv[1] = prevArgv1
+      if (prevEnvRepo !== undefined) process.env.DSH_UPDATE_REPO_DIR = prevEnvRepo
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('verifyMirrorTagSha and mirror fetch validation block SHA mismatches and honor verifyMirrorSha', async () => {
+  const { base, originDir, localDir } = setupOriginAndLocalRepos()
+  try {
+    const githubOrigin = 'https://github.com/deepseek-ai/deepseek-harness.git'
+    const mirrorUrl = `https://gh-proxy.com/${githubOrigin}`
+    git(localDir, ['remote', 'set-url', 'origin', githubOrigin])
+    git(localDir, ['config', `url.${originDir}.insteadOf`, mirrorUrl])
+
+    // Compute expected SHA of dsh-v0.2.0 in originDir
+    const v2Sha = git(originDir, ['rev-parse', 'dsh-v0.2.0^{commit}']).trim()
+    const v1Sha = git(localDir, ['rev-parse', 'HEAD']).trim()
+    const mirrorNet = { source: 'mirror', mirror: { id: 'gh-proxy', label: 'gh-proxy.com', prefix: 'https://gh-proxy.com/' } }
+
+    // 1. Mismatch -> immediately fail, HEAD must remain at v1
+    const mismatchStub = createStubRes()
+    await runUpdateStreaming(localDir, mismatchStub.res, {
+      network: mirrorNet,
+      autoRestart: false,
+      windowsDetachedUpdate: false,
+      requiredPaths: [],
+      peerConflictPolicy: 'ignore',
+      profilesDir: join(base, 'no-profiles'),
+      mirrorShaFetcher: async () => ({ json: { sha: '0'.repeat(40) } }),
+    })
+    const mismatchEvents = mismatchStub.timeline.filter((x) => x.kind === 'write').map((x) => x.event)
+    const mismatchDone = mismatchEvents.find((e) => e.type === 'done')
+    assert.ok(mismatchDone !== undefined && mismatchDone.ok === false)
+    assert.match(mismatchDone.error, /不一致|篡改/)
+    assert.equal(git(localDir, ['rev-parse', 'HEAD']).trim(), v1Sha, 'HEAD must not change on SHA mismatch')
+
+    // Unit check verifyMirrorTagSha statuses directly
+    const directVerifyOk = await verifyMirrorTagSha(localDir, 'dsh-v0.2.0', 'deepseek-ai/deepseek-harness', {
+      fetcher: async () => ({ json: { sha: v2Sha.toUpperCase() } }),
+    })
+    assert.equal(directVerifyOk.status, 'verified')
+    const directVerifyFail = await verifyMirrorTagSha(localDir, 'dsh-v0.2.0', 'deepseek-ai/deepseek-harness', {
+      fetcher: async () => ({ error: 'HTTP 503' }),
+    })
+    assert.equal(directVerifyFail.status, 'unverified')
+
+    // 2. Official API fails + verifyMirrorSha: true -> strict fail without checkout
+    const strictStub = createStubRes()
+    await runUpdateStreaming(localDir, strictStub.res, {
+      network: mirrorNet,
+      verifyMirrorSha: true,
+      autoRestart: false,
+      windowsDetachedUpdate: false,
+      requiredPaths: [],
+      peerConflictPolicy: 'ignore',
+      profilesDir: join(base, 'no-profiles'),
+      mirrorShaFetcher: async () => ({ error: 'HTTP 503' }),
+    })
+    const strictEvents = strictStub.timeline.filter((x) => x.kind === 'write').map((x) => x.event)
+    const strictDone = strictEvents.find((e) => e.type === 'done')
+    assert.ok(strictDone !== undefined && strictDone.ok === false)
+    assert.match(strictDone.error, /verifyMirrorSha|无法从 GitHub 官方 API 核验/)
+    assert.equal(git(localDir, ['rev-parse', 'HEAD']).trim(), v1Sha)
+
+    await withPnpmShim(join(base, 'bin'), async () => {
+      // 3. Official API fails + default verifyMirrorSha: false -> warn notice & continue
+      const warnStub = createStubRes()
+      await runUpdateStreaming(localDir, warnStub.res, {
+        network: mirrorNet,
+        autoRestart: false,
+        windowsDetachedUpdate: false,
+        requiredPaths: [],
+        peerConflictPolicy: 'ignore',
+        profilesDir: join(base, 'no-profiles'),
+        mirrorShaFetcher: async () => ({ error: 'network error' }),
+      })
+      const warnEvents = warnStub.timeline.filter((x) => x.kind === 'write').map((x) => x.event)
+      assert.ok(warnEvents.some((e) => e.type === 'notice' && /未能向 GitHub 官方 API 核验/.test(e.text)))
+      const warnDone = warnEvents.find((e) => e.type === 'done')
+      assert.ok(warnDone !== undefined && warnDone.ok === true, `expected ok:true, got ${warnDone?.error}`)
+      assert.equal(git(localDir, ['rev-parse', 'HEAD']).trim(), v2Sha)
+
+      // 4. Rollback back to dsh-v0.1.0 with matching SHA -> verified notice & ok:true
+      const matchStub = createStubRes()
+      await runUpdateStreaming(localDir, matchStub.res, {
+        network: mirrorNet,
+        targetTag: 'dsh-v0.1.0',
+        autoRestart: false,
+        windowsDetachedUpdate: false,
+        requiredPaths: [],
+        peerConflictPolicy: 'ignore',
+        profilesDir: join(base, 'no-profiles'),
+        mirrorShaFetcher: async () => ({ json: { sha: v1Sha } }),
+      })
+      const matchEvents = matchStub.timeline.filter((x) => x.kind === 'write').map((x) => x.event)
+      assert.ok(matchEvents.some((e) => e.type === 'notice' && /核验.*一致/.test(e.text)))
+      const matchDone = matchEvents.find((e) => e.type === 'done')
+      assert.ok(matchDone !== undefined && matchDone.ok === true, `expected ok:true, got ${matchDone?.error}`)
+      assert.equal(git(localDir, ['rev-parse', 'HEAD']).trim(), v1Sha)
+    })
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('localVersion matches dsh-v* only and untagged local commits block checkout unless allowed', async () => {
+  const { base, localDir } = setupOriginAndLocalRepos()
+  try {
+    // Unrelated tag on top of dsh-v0.1.0 must not shadow dsh-v0.1.0
+    git(localDir, ['tag', 'other-v9.9.9'])
+    const st1 = await checkStatus(localDir, { repoDir: localDir })
+    assert.equal(st1.ok, true)
+    assert.equal(st1.localTag, 'dsh-v0.1.0')
+    assert.equal(st1.localAheadCommits, 0)
+
+    // Add an untagged local commit
+    writeFileSync(join(localDir, 'local-only.txt'), 'keep\n')
+    git(localDir, ['add', 'local-only.txt'])
+    git(localDir, ['commit', '-m', 'local untagged work'])
+    const localHead = git(localDir, ['rev-parse', 'HEAD']).trim()
+    assert.equal(countUntaggedLocalCommits(localDir), 1)
+
+    const st2 = await checkStatus(localDir, { repoDir: localDir })
+    assert.equal(st2.localAheadCommits, 1)
+
+    // Default runUpdateStreaming refuses checkout
+    const blockedStub = createStubRes()
+    await runUpdateStreaming(localDir, blockedStub.res, {
+      autoRestart: false,
+      windowsDetachedUpdate: false,
+      requiredPaths: [],
+      peerConflictPolicy: 'ignore',
+      profilesDir: join(base, 'no-profiles'),
+    })
+    const blockedDone = blockedStub.timeline.filter((x) => x.kind === 'write').map((x) => x.event).find((e) => e.type === 'done')
+    assert.ok(blockedDone !== undefined && blockedDone.ok === false)
+    assert.match(blockedDone.error, /未包含在任何 dsh-v\* tag 中的本地提交/)
+    assert.equal(git(localDir, ['rev-parse', 'HEAD']).trim(), localHead)
+
+    // allowLocalCommits: true proceeds
+    await withPnpmShim(join(base, 'bin'), async () => {
+      const okStub = createStubRes()
+      await runUpdateStreaming(localDir, okStub.res, {
+        allowLocalCommits: true,
+        autoRestart: false,
+        windowsDetachedUpdate: false,
+        requiredPaths: [],
+        peerConflictPolicy: 'ignore',
+        profilesDir: join(base, 'no-profiles'),
+      })
+      const okDone = okStub.timeline.filter((x) => x.kind === 'write').map((x) => x.event).find((e) => e.type === 'done')
+      assert.ok(okDone !== undefined && okDone.ok === true, `expected ok:true, got ${okDone?.error}`)
+      assert.equal(git(localDir, ['describe', '--tags', '--exact-match', 'HEAD']).trim(), 'dsh-v0.2.0')
+    })
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('runUpdateStreaming restores pre-checkout stash when checkout fails after stash: true', async () => {
+  const { base, originDir, localDir } = setupOriginAndLocalRepos()
+  try {
+    // Make dsh-v0.3.0 track file `blocked`, while localDir has a nested git repo at `blocked/`:
+    // `git stash push -u` ignores the nested repo (stashing notes.txt) and `git checkout` aborts.
+    writeFileSync(join(originDir, 'blocked'), 'from v0.3.0\n')
+    git(originDir, ['add', 'blocked'])
+    git(originDir, ['commit', '-m', 'release 0.3.0 with blocked'])
+    git(originDir, ['tag', 'dsh-v0.3.0'])
+
+    mkdirSync(join(localDir, 'blocked'), { recursive: true })
+    git(join(localDir, 'blocked'), ['init'])
+    writeFileSync(join(localDir, 'blocked', 'inner.txt'), 'nested repo file\n')
+    writeFileSync(join(localDir, 'notes.txt'), 'precious uncommitted edit\n')
+
+    const stub = createStubRes()
+    await runUpdateStreaming(localDir, stub.res, {
+      stash: true,
+      autoRestart: false,
+      windowsDetachedUpdate: false,
+      requiredPaths: [],
+      peerConflictPolicy: 'ignore',
+      profilesDir: join(base, 'no-profiles'),
+    })
+
+    const events = stub.timeline.filter((x) => x.kind === 'write').map((x) => x.event)
+    const done = events.find((e) => e.type === 'done')
+    assert.ok(done !== undefined && done.ok === false, 'checkout failure must produce a failed done event')
+    assert.match(done.error, /git checkout failed/)
+    assert.ok(
+      events.some((e) => e.type === 'step' && /Restoring your local changes after checkout failure/.test(e.text)),
+      'must invoke post-checkout-failure stash restore',
+    )
+
+    // Pre-checkout uncommitted modification must be restored and stash stack must be empty
+    assert.match(readFileSync(join(localDir, 'notes.txt'), 'utf8'), /^precious uncommitted edit\r?\n$/)
+    assert.equal(git(localDir, ['stash', 'list']).trim(), '')
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('handleRun returns 400 for invalid JSON or non-object JSON without locking the latch', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-run-bad-json-'))
+  try {
+    const { ctx, routes } = mockCtx()
+    apply(ctx, { repoDir: root })
+    const runRoute = routes.get(UPDATE_PATHS.run).fetch
+
+    const badJsonRes = await runRoute(new Request('http://localhost' + UPDATE_PATHS.run, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{bad',
+    }))
+    assert.equal(badJsonRes.status, 400)
+    const badJsonBody = await badJsonRes.json()
+    assert.equal(badJsonBody.ok, false)
+    assert.equal(badJsonBody.error, 'invalid JSON body')
+
+    const arrayRes = await runRoute(new Request('http://localhost' + UPDATE_PATHS.run, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '[1,2]',
+    }))
+    assert.equal(arrayRes.status, 400)
+    const arrayBody = await arrayRes.json()
+    assert.equal(arrayBody.ok, false)
+    assert.equal(arrayBody.error, 'request body must be a JSON object')
+
+    // Follow-up valid POST must return 200 (not 409)
+    const okRes = await runRoute(new Request('http://localhost' + UPDATE_PATHS.run, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    }))
+    assert.equal(okRes.status, 200)
+    await okRes.text()
+    await ctx._dispose()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('direct fetchJson enforces 2MB body limit on both Content-Length and chunked streams', async () => {
+  const oversizedBytes = 2 * 1024 * 1024 + 128
+  const server = http.createServer((req, res) => {
+    if (req.url === '/cl-too-big') {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': String(oversizedBytes) })
+      res.end('a'.repeat(oversizedBytes))
+      return
+    }
+    if (req.url === '/chunked-too-big') {
+      res.writeHead(200, { 'content-type': 'application/json', 'transfer-encoding': 'chunked' })
+      const chunk = Buffer.alloc(64 * 1024, 0x61)
+      for (let sent = 0; sent < oversizedBytes; sent += chunk.length) {
+        res.write(chunk)
+      }
+      res.end()
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{"ok":true}')
+  })
+  const port = await listenServer(server)
+  try {
+    const cl = await fetchJson(`http://127.0.0.1:${port}/cl-too-big`, 3000)
+    assert.equal(cl.error, 'response body too large')
+
+    const chunked = await fetchJson(`http://127.0.0.1:${port}/chunked-too-big`, 3000)
+    assert.equal(chunked.error, 'response body too large')
+
+    const ok = await fetchJson(`http://127.0.0.1:${port}/ok`, 3000)
+    assert.deepEqual(ok, { json: { ok: true } })
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('redactSecrets strips embedded URL credentials and inject does not require agents', async () => {
+  assert.equal(
+    redactSecrets('fatal: could not read from https://ghp_secret123@github.com/a/b.git and http://user:pass@proxy.local:8080/x'),
+    'fatal: could not read from https://***@github.com/a/b.git and http://***@proxy.local:8080/x',
+  )
+  assert.equal(redactSecrets('plain message without secrets'), 'plain message without secrets')
+  assert.equal(inject.includes('agents'), false, 'inject must not hard-require agents')
+
+  const root = mkdtempSync(join(tmpdir(), 'dsh-no-agents-'))
+  try {
+    git(root, ['init'])
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-root' }) + '\n')
+    git(root, ['add', '.'])
+    git(root, ['commit', '-m', 'init'])
+    git(root, ['tag', 'dsh-v0.1.0'])
+
+    const routes = new Map()
+    const ctxNoAgents = {
+      connection: {
+        fetch: {
+          register(route) {
+            routes.set(route.path, route)
+            return async () => {}
+          },
+        },
+      },
+      effect(fn) {
+        ctxNoAgents._dispose = fn()
+        return ctxNoAgents._dispose
+      },
+    }
+    apply(ctxNoAgents, { repoDir: root, autoRestart: false })
+    const statusRes = await routes.get(UPDATE_PATHS.status).fetch(
+      new Request('http://localhost' + UPDATE_PATHS.status, { method: 'GET' }),
+    )
+    assert.equal(statusRes.status, 200)
+    const statusBody = await statusRes.json()
+    assert.equal(statusBody.busySessions, 0)
+    assert.equal(statusBody.localTag, 'dsh-v0.1.0')
+    await ctxNoAgents._dispose()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// ---- Issues #3, #7, #8, #10: helper lifecycle, supervisors, port & logs ----
+
+test('detectedSupervisor and restartAllowed recognize all 6 supervisors and reject inherited shells', () => {
+  const noMarker = { platform: 'linux', pid: 500, hasContainerMarker: false }
+  // 1. systemd (system unit requires ppid === 1)
+  assert.equal(detectedSupervisor({ INVOCATION_ID: 'abc' }, 1, noMarker), 'systemd')
+  assert.equal(detectedSupervisor({ JOURNAL_STREAM: '8:1234' }, 1, noMarker), 'systemd')
+  // 2. systemd-user
+  assert.equal(detectedSupervisor({ NOTIFY_SOCKET: '/run/user/1000/systemd/notify' }, 42, noMarker), 'systemd-user')
+  assert.equal(detectedSupervisor({ INVOCATION_ID: 'abc', MANAGERPID: '42' }, 42, noMarker), 'systemd-user')
+  // 3. pm2
+  assert.equal(detectedSupervisor({ pm_id: '0' }, 42, noMarker), 'pm2')
+  // 4. supervisord
+  assert.equal(detectedSupervisor({ SUPERVISOR_ENABLED: '1' }, 42, noMarker), 'supervisord')
+  assert.equal(detectedSupervisor({ SUPERVISOR_PROCESS_NAME: 'dsh' }, 42, noMarker), 'supervisord')
+  // 5. launchd (macOS, ppid === 1, non-zero XPC_SERVICE_NAME, no terminal/SSH)
+  assert.equal(detectedSupervisor({ XPC_SERVICE_NAME: 'com.example.dsh' }, 1, { platform: 'darwin', pid: 500, hasContainerMarker: false }), 'launchd')
+  // 6. container (non-win32 pid === 1 or ppid === 1 with container markers)
+  assert.equal(detectedSupervisor({}, 0, { platform: 'linux', pid: 1, hasContainerMarker: false }), 'container')
+  assert.equal(detectedSupervisor({ container: 'podman' }, 1, noMarker), 'container')
+  assert.equal(detectedSupervisor({ KUBERNETES_SERVICE_HOST: '10.0.0.1' }, 1, noMarker), 'container')
+  assert.equal(detectedSupervisor({}, 1, { platform: 'linux', pid: 500, hasContainerMarker: true }), 'container')
+
+  // Negative cases: ordinary shells or non-matching platforms/ppids
+  assert.equal(detectedSupervisor({ INVOCATION_ID: 'abc' }, 1234, noMarker), null)
+  assert.equal(detectedSupervisor({ INVOCATION_ID: 'abc', MANAGERPID: '42' }, 999, noMarker), null)
+  assert.equal(detectedSupervisor({ XPC_SERVICE_NAME: '0' }, 1, { platform: 'darwin', pid: 500, hasContainerMarker: false }), null)
+  assert.equal(detectedSupervisor({ XPC_SERVICE_NAME: 'com.apple.Terminal', TERM_PROGRAM: 'Apple_Terminal' }, 1, { platform: 'darwin', pid: 500, hasContainerMarker: false }), null)
+  assert.equal(detectedSupervisor({ XPC_SERVICE_NAME: 'com.example.dsh', SSH_TTY: '/dev/ttys001' }, 1, { platform: 'darwin', pid: 500, hasContainerMarker: false }), null)
+  assert.equal(detectedSupervisor({ XPC_SERVICE_NAME: 'com.example.dsh' }, 1, noMarker), null)
+  assert.equal(detectedSupervisor({}, 0, { platform: 'win32', pid: 1, hasContainerMarker: false }), null)
+  assert.equal(detectedSupervisor({ container: 'docker' }, 1, { platform: 'win32', pid: 500, hasContainerMarker: false }), null)
+
+  // restartAllowed precedence: explicit config.allowRestart wins over supervisor detection
+  assert.equal(restartAllowed({ allowRestart: true }, { pm_id: '0' }, 42, noMarker), true)
+  assert.equal(restartAllowed({ allowRestart: false }, {}, 42, noMarker), false)
+  assert.equal(restartAllowed(undefined, { pm_id: '0' }, 42, noMarker), false)
+  assert.equal(restartAllowed(undefined, {}, 42, noMarker), true)
+})
+
+test('resolveListeningPort honors priority order and filters invalid ports', () => {
+  const reqHost = { headers: { host: '127.0.0.1:6100' }, url: 'http://localhost:6101/api/dsh-update/restart' }
+  const fullCtx = {
+    webServer: { port: 4100, server: { address: () => ({ port: 4101 }) } },
+    connection: { port: 4102 },
+  }
+  const argv = ['node', 'dsh.js', '--port', '5100']
+
+  assert.equal(resolveListeningPort(reqHost, fullCtx, { port: 3100 }, argv), 3100)
+  assert.equal(resolveListeningPort(reqHost, fullCtx, { port: '3101' }, argv), 3101)
+  assert.equal(resolveListeningPort(reqHost, fullCtx, { port: 0 }, argv), 4100)
+  assert.equal(resolveListeningPort(reqHost, { webServer: { server: { address: () => ({ port: 4101 }) } }, connection: { port: 4102 } }, undefined, argv), 4101)
+  assert.equal(resolveListeningPort(reqHost, { connection: { port: 4102 } }, undefined, argv), 4102)
+  assert.equal(resolveListeningPort(reqHost, {}, undefined, ['node', 'dsh.js', '--port=5101']), 5101)
+  assert.equal(resolveListeningPort(reqHost, {}, undefined, ['node', 'dsh.js', '-p', '5102']), 5102)
+  assert.equal(resolveListeningPort(reqHost, {}, undefined, ['node', 'dsh.js', '--port', '99999']), 6100)
+  assert.equal(resolveListeningPort({ headers: {}, url: 'http://localhost:6101/x' }, {}, undefined, []), 6101)
+  assert.equal(resolveListeningPort({ headers: { host: 'localhost' }, url: '/x' }, { webServer: { port: -1 } }, { port: '70000' }, ['--port', 'abc']), null)
+})
+
+test('parseDetachedUpdateLog extracts aborting and failure reasons without losing root cause', () => {
+  const iso = '2026-11-28T13:00:00.000Z'
+  const aborted = parseDetachedUpdateLog([
+    '[dsh-update] boot verify started (target dsh-v0.2.0)',
+    '[dsh-update] aborting: port 3080 still in use after 60s (host pid 1234 still alive); built dsh-v0.2.0 kept on disk — restart dsh manually',
+  ].join('\n'), iso)
+  assert.equal(aborted.ok, false)
+  assert.equal(aborted.tag, undefined)
+  assert.equal(aborted.bootChecked, true)
+  assert.equal(aborted.at, iso)
+  assert.equal(aborted.reason, 'port 3080 still in use after 60s (host pid 1234 still alive); built dsh-v0.2.0 kept on disk — restart dsh manually')
+
+  const buildFailedThenRolledBack = parseDetachedUpdateLog([
+    '[dsh-update] build finished — boot not checked (dsh-v0.2.0)',
+    '[dsh-update] pnpm run build failed: TS2304 cannot find name Foo',
+    '[dsh-update] rolled back to dsh-v0.1.0',
+  ].join('\n'), iso)
+  assert.equal(buildFailedThenRolledBack.ok, false)
+  assert.equal(buildFailedThenRolledBack.tag, undefined)
+  assert.equal(buildFailedThenRolledBack.bootChecked, true)
+  assert.equal(buildFailedThenRolledBack.reason, 'TS2304 cannot find name Foo')
+
+  const longErr = 'X'.repeat(300)
+  const truncated = parseDetachedUpdateLog(`[dsh-update] pnpm install failed: ${longErr}`, iso)
+  assert.equal(truncated.ok, false)
+  assert.ok(truncated.reason.length <= 200)
+  assert.ok(truncated.reason.endsWith('...'))
+})
+
+test('helper sources with hostPid pass syntax check and guard 60s port timeout with isPidAlive', () => {
+  const ctx = {
+    repoDir: '/tmp/deepseek-harness',
+    target: 'dsh-v0.2.2-alpha.2',
+    rollbackRef: 'dsh-v0.2.1',
+    stashedSomething: false,
+    autoRestart: true,
+    port: 3080,
+    hostPid: 12345,
+    pm: { cmd: 'pnpm', args: [] },
+    spawnReplacement: {
+      file: 'node',
+      args: ['apps/cli/src/index.js'],
+      cwd: '/tmp/deepseek-harness',
+      viaShell: false,
+      detached: true,
+      windowsHide: false,
+    },
+    logs: { out: '/tmp/dsh-update-apply.out.log', err: '/tmp/dsh-update-apply.err.log' },
+    orphanLibRoots: ['packages', 'apps'],
+    bootHealthWindowMs: 15000,
+    safetyModule: '/tmp/dsh-update/lib/safety.js',
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-helper-hostpid-'))
+  try {
+    for (const [name, source] of [
+      ['update', updateHelperSource(ctx)],
+      ['boot', bootVerifyHelperSource(ctx)],
+    ]) {
+      assert.ok(source.length < 32000, `${name} helper is ${source.length} chars`)
+      assert.match(source, /const hostPid = 12345/)
+      assert.match(source, /const isPidAlive =/)
+      assert.match(source, /hostPid && isPidAlive\(hostPid\)/)
+      assert.match(source, /await rollback\(/)
+      assert.match(source, /fs\.unlinkSync\(__filename\)/)
+      const file = join(dir, `${name}.cjs`)
+      writeFileSync(file, source)
+      execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' })
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('async spawn failure on /restart returns 500, resets latch, leaves no .cjs files, and does not kill host', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-restart-enoent-'))
+  const logDir = join(root, 'logs')
+  mkdirSync(logDir, { recursive: true })
+  const missingNode = join(root, 'does-not-exist-node')
+  let sigtermCount = 0
+  const onSigterm = () => { sigtermCount++ }
+  process.on('SIGTERM', onSigterm)
+
+  const beforeCjs = new Set(
+    (await import('node:fs')).readdirSync(tmpdir()).filter((f) => f.startsWith('dsh-update-helper-')),
+  )
+  try {
+    const { ctx, routes } = mockCtx()
+    apply(ctx, { repoDir: root, allowRestart: true, _helperNodePath: missingNode, _helperLogDir: logDir })
+    const restartRoute = routes.get(UPDATE_PATHS.restart).fetch
+
+    const res1 = await restartRoute(new Request('http://localhost:3080' + UPDATE_PATHS.restart, { method: 'POST' }))
+    assert.equal(res1.status, 500)
+    const body1 = await res1.json()
+    assert.equal(body1.ok, false)
+    assert.match(body1.error, /无法启动重启进程/)
+
+    // Second request must ALSO attempt spawn and return 500 (not 200 { already: true })
+    const res2 = await restartRoute(new Request('http://localhost:3080' + UPDATE_PATHS.restart, { method: 'POST' }))
+    assert.equal(res2.status, 500)
+    const body2 = await res2.json()
+    assert.equal(body2.ok, false)
+
+    await new Promise((r) => setTimeout(r, 600))
+    assert.equal(sigtermCount, 0, 'failed spawn must never schedule SIGTERM on host')
+
+    const afterCjs = (await import('node:fs')).readdirSync(tmpdir()).filter((f) => f.startsWith('dsh-update-helper-') && !beforeCjs.has(f))
+    assert.deepEqual(afterCjs, [], 'failed spawn must clean up temporary .cjs helper scripts')
+
+    // scheduleDetachedUpdate and scheduleBootVerify must also reject & clean up on async ENOENT
+    const baseOpts = {
+      repoDir: root,
+      target: 'dsh-v0.2.0',
+      rollbackRef: 'dsh-v0.1.0',
+      port: 3080,
+      nodePath: missingNode,
+      logDir,
+    }
+    await assert.rejects(() => scheduleDetachedUpdate(baseOpts))
+    await assert.rejects(() => scheduleBootVerify(baseOpts))
+
+    const afterAllCjs = (await import('node:fs')).readdirSync(tmpdir()).filter((f) => f.startsWith('dsh-update-helper-') && !beforeCjs.has(f))
+    assert.deepEqual(afterAllCjs, [], 'scheduleDetachedUpdate/scheduleBootVerify must clean up .cjs on failure')
+
+    await ctx._dispose()
+  } finally {
+    process.removeListener('SIGTERM', onSigterm)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('spawnDetachedHelper executes a temp .cjs file (never -e) and helper self-deletes on exit', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-helper-run-'))
+  try {
+    const marker = join(dir, 'ran.txt')
+    const logOut = join(dir, 'out.log')
+    const logErr = join(dir, 'err.log')
+    const seenArgs = []
+    const { spawn: realSpawn } = await import('node:child_process')
+    const source = [
+      "const fs = require('node:fs')",
+      `const marker = ${JSON.stringify(marker)}`,
+      'const main = async () => {',
+      '  fs.writeFileSync(marker, __filename, "utf8")',
+      '}',
+      'main().finally(() => { try { fs.unlinkSync(__filename) } catch {} })',
+    ].join('\n')
+
+    const info = await spawnDetachedHelper({
+      kind: 'test',
+      source,
+      logOut,
+      logErr,
+      spawnImpl(file, args, opts) {
+        seenArgs.push({ file, args, opts })
+        return realSpawn(file, args, opts)
+      },
+    })
+
+    assert.equal(seenArgs.length, 1)
+    assert.ok(!seenArgs[0].args.includes('-e'), 'must not pass -e inline script')
+    assert.equal(seenArgs[0].args[0], info.scriptFile)
+    assert.match(info.scriptFile, /dsh-update-helper-test-.*-[0-9a-f]{6}\.cjs$/)
+    assert.equal(seenArgs[0].opts.detached, true)
+    assert.equal(seenArgs[0].opts.windowsHide, true)
+
+    // Wait for the child to write the marker and self-delete scriptFile
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline && (!existsSync(marker) || existsSync(info.scriptFile))) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    assert.equal(existsSync(marker), true, 'helper .cjs script must execute')
+    assert.equal(readFileSync(marker, 'utf8'), info.scriptFile)
+    assert.equal(existsSync(info.scriptFile), false, 'helper .cjs script must self-delete on exit')
+
+    // Also verify restartHelperSource ends with self-deletion and passes node --check
+    const restartSrc = restartHelperSource(
+      { file: process.execPath, args: ['-v'], viaShell: false, detached: false, windowsHide: true },
+      { cwd: dir },
+      { out: logOut, err: logErr },
+      null,
+    )
+    assert.match(restartSrc, /fs\.unlinkSync\(__filename\)/)
+    const restartCheck = join(dir, 'restart-check.cjs')
+    writeFileSync(restartCheck, restartSrc)
+    execFileSync(process.execPath, ['--check', restartCheck], { stdio: 'pipe' })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('runUpdateStreaming rolls back and does not kill host when scheduleBootVerify fails asynchronously', async () => {
+  const { base, localDir } = setupOriginAndLocalRepos()
+  const logDir = join(base, 'logs')
+  mkdirSync(logDir, { recursive: true })
+  const missingNode = join(base, 'missing-node-bin')
+  let sigtermCount = 0
+  const onSigterm = () => { sigtermCount++ }
+  process.on('SIGTERM', onSigterm)
+
+  try {
+    const v1Sha = git(localDir, ['rev-parse', 'dsh-v0.1.0^{commit}']).trim()
+    await withPnpmShim(join(base, 'bin'), async () => {
+      const stub = createStubRes()
+      await runUpdateStreaming(localDir, stub.res, {
+        autoRestart: true,
+        windowsDetachedUpdate: false,
+        requiredPaths: [],
+        peerConflictPolicy: 'ignore',
+        profilesDir: join(base, 'no-profiles'),
+        _helperNodePath: missingNode,
+        _helperLogDir: logDir,
+      })
+      const events = stub.timeline.filter((x) => x.kind === 'write').map((x) => x.event)
+      const done = events.find((e) => e.type === 'done')
+      assert.ok(done !== undefined)
+      assert.equal(done.ok, false)
+      assert.equal(done.rolledBack, true)
+      assert.match(done.error, /无法启动健康检查/)
+      assert.equal(git(localDir, ['rev-parse', 'HEAD']).trim(), v1Sha, 'failed boot-verify spawn must trigger rollback to v1')
+    })
+    assert.equal(sigtermCount, 0)
+  } finally {
+    process.removeListener('SIGTERM', onSigterm)
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('client UpdateTrigger/UpdatePanel render npm-install, not-harness-repo, and fork repoSlug release URLs', async () => {
+  const clientCode = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+
+  function createReactHarness() {
+    const Fragment = Symbol('Fragment')
+    const instances = new Map()
+    let currentHooks = null
+    let hookIndex = 0
+    const react = {
+      Fragment,
+      useState(init) {
+        const idx = hookIndex++
+        if (!(idx in currentHooks)) {
+          currentHooks[idx] = { value: typeof init === 'function' ? init() : init }
+        }
+        const slot = currentHooks[idx]
+        return [slot.value, (next) => { slot.value = typeof next === 'function' ? next(slot.value) : next }]
+      },
+      useEffect() {},
+      useRef(init) {
+        const idx = hookIndex++
+        if (!(idx in currentHooks)) {
+          currentHooks[idx] = { current: init }
+        }
+        return currentHooks[idx]
+      },
+      useCallback(fn) { return fn },
+      createElement(type, props, ...children) {
+        const flat = []
+        const push = (c) => {
+          if (Array.isArray(c)) c.forEach(push)
+          else if (c !== null && c !== undefined && c !== false && c !== true) flat.push(c)
+        }
+        children.forEach(push)
+        return { type, props: props || {}, children: flat }
+      },
+    }
+    function render(node, path = 'root') {
+      if (node === null || node === undefined || typeof node !== 'object') return node
+      if (typeof node.type === 'function') {
+        if (!instances.has(path)) instances.set(path, [])
+        const prevHooks = currentHooks
+        const prevIdx = hookIndex
+        currentHooks = instances.get(path)
+        hookIndex = 0
+        let out
+        try {
+          out = node.type({ ...node.props, children: node.children })
+        } finally {
+          currentHooks = prevHooks
+          hookIndex = prevIdx
+        }
+        return render(out, path + '.fn')
+      }
+      return {
+        type: node.type,
+        props: node.props,
+        children: node.children.map((c, i) => render(c, `${path}.${i}`)),
+      }
+    }
+    function collect(node, pred, acc = []) {
+      if (!node || typeof node !== 'object') return acc
+      if (pred(node)) acc.push(node)
+      if (Array.isArray(node.children)) {
+        for (const c of node.children) collect(c, pred, acc)
+      }
+      return acc
+    }
+    function textOf(node) {
+      if (node === null || node === undefined) return ''
+      if (typeof node !== 'object') return String(node)
+      return (node.children || []).map(textOf).join('')
+    }
+    return { react, render, collect, textOf }
+  }
+
+  async function renderAfterCheck({ lang = 'zh-CN', statusPayload, notesPayload = { ok: false } }) {
+    const harness = createReactHarness()
+    const opened = []
+    let loaded = null
+    const store = new Map()
+    const sandbox = {
+      console, Date, Math, JSON, Number, String, Array, Object, Set, Map, RegExp, Error, Promise, TextDecoder,
+      encodeURIComponent, parseInt,
+      fetch: async (url) => {
+        if (String(url).startsWith('/api/dsh-update/status')) {
+          return { ok: true, status: 200, json: async () => statusPayload }
+        }
+        if (String(url).startsWith('/api/dsh-update/release-notes')) {
+          return { ok: true, status: 200, json: async () => notesPayload }
+        }
+        return { ok: false, status: 404, json: async () => ({}) }
+      },
+      navigator: { language: lang },
+      document: { documentElement: { lang } },
+      window: {
+        __ModuleLoader__: { load(def) { loaded = def } },
+        localStorage: {
+          getItem(k) { return store.has(k) ? store.get(k) : null },
+          setItem(k, v) { store.set(k, String(v)) },
+          removeItem(k) { store.delete(k) },
+        },
+        open(url, target, features) { opened.push({ url, target, features }) },
+        setTimeout() { return 1 },
+        clearTimeout() {},
+        setInterval() { return 1 },
+        clearInterval() {},
+        addEventListener() {},
+        removeEventListener() {},
+      },
+    }
+    sandbox.setTimeout = sandbox.window.setTimeout
+    sandbox.clearTimeout = sandbox.window.clearTimeout
+    runInNewContext(clientCode, sandbox, { filename: 'lib/client.js' })
+    const exports = loaded.factory((id) => (id === 'react' ? harness.react : null))
+    let TriggerComponent = null
+    exports.apply({
+      locale: { getLocale: () => ({ active: lang }), subscribe: () => () => {} },
+      slots: {
+        inject(_slot, factory) { return factory() },
+        register(_meta, component) { TriggerComponent = component; return () => {} },
+      },
+    })
+    assert.equal(typeof TriggerComponent, 'function')
+
+    // Click the trigger button to open the panel and await /status + /release-notes
+    const initialTree = harness.render(harness.react.createElement(TriggerComponent, { wide: true }))
+    const triggerBtn = harness.collect(initialTree, (n) => n.type === 'button')[0]
+    triggerBtn.props.onClick()
+    await new Promise((r) => setTimeout(r, 15))
+    const tree = harness.render(harness.react.createElement(TriggerComponent, { wide: true }))
+    return { tree, harness, opened }
+  }
+
+  // 1. npm-install errorCode renders upgrade guidance in zh and en
+  const npmZh = await renderAfterCheck({
+    lang: 'zh-CN',
+    statusPayload: {
+      ok: false, errorCode: 'npm-install', repoDir: '/tmp/app',
+      error: 'not a git checkout (installed via npm): /tmp/app', localCommit: '', outdated: false,
+    },
+  })
+  const npmZhText = npmZh.harness.textOf(npmZh.tree)
+  assert.match(npmZhText, /@deepseek-ai\/dsh/)
+  assert.match(npmZhText, /npm install -g @deepseek-ai\/dsh@latest/)
+  assert.match(npmZhText, /源码仓库/)
+
+  const npmEn = await renderAfterCheck({
+    lang: 'en-US',
+    statusPayload: {
+      ok: false, errorCode: 'npm-install', repoDir: '/tmp/app',
+      error: 'not a git checkout (installed via npm): /tmp/app', localCommit: '', outdated: false,
+    },
+  })
+  const npmEnText = npmEn.harness.textOf(npmEn.tree)
+  assert.match(npmEnText, /npm install -g @deepseek-ai\/dsh@latest/)
+  assert.match(npmEnText, /source checkout/)
+
+  // 2. not-harness-repo errorCode renders refusal message with repoDir
+  const notHarness = await renderAfterCheck({
+    lang: 'zh-CN',
+    statusPayload: {
+      ok: false, errorCode: 'not-harness-repo', repoDir: '/tmp/other-project',
+      error: 'target directory is not a deepseek-harness source repository: /tmp/other-project', localCommit: '', outdated: false,
+    },
+  })
+  const notHarnessText = notHarness.harness.textOf(notHarness.tree)
+  assert.match(notHarnessText, /deepseek-harness 源码仓库/)
+  assert.match(notHarnessText, /\/tmp\/other-project/)
+
+  // 3. Fork repoSlug drives both error-fallback <a> href and official release-notes button URL
+  const fork = await renderAfterCheck({
+    lang: 'zh-CN',
+    statusPayload: {
+      ok: true, outdated: true, localTag: 'dsh-v0.1.0', remoteTag: 'dsh-v0.2.0',
+      repoSlug: 'alice/deepseek-harness', tags: ['dsh-v0.1.0'],
+    },
+    notesPayload: { ok: false },
+  })
+  const forkLinks = fork.harness.collect(fork.tree, (n) => n.type === 'a')
+  assert.ok(forkLinks.some((a) => a.props.href === 'https://github.com/alice/deepseek-harness/releases'))
+  const notesBtn = fork.harness.collect(
+    fork.tree,
+    (n) => n.type === 'button' && n.props.title === 'https://github.com/alice/deepseek-harness/releases/tag/dsh-v0.2.0',
+  )[0]
+  assert.ok(notesBtn, 'release notes button must use fork repoSlug URL')
+  notesBtn.props.onClick()
+  assert.deepEqual(fork.opened, [{
+    url: 'https://github.com/alice/deepseek-harness/releases/tag/dsh-v0.2.0',
+    target: '_blank',
+    features: 'noopener,noreferrer',
+  }])
+
+  // 4. Malformed repoSlug falls back safely to deepseek-ai/deepseek-harness
+  const badSlug = await renderAfterCheck({
+    lang: 'zh-CN',
+    statusPayload: {
+      ok: true, outdated: true, localTag: 'dsh-v0.1.0', remoteTag: 'dsh-v0.2.0',
+      repoSlug: 'https://evil.example/x/y', tags: ['dsh-v0.1.0'],
+    },
+    notesPayload: { ok: false },
+  })
+  const badLinks = badSlug.harness.collect(badSlug.tree, (n) => n.type === 'a')
+  assert.ok(badLinks.some((a) => a.props.href === 'https://github.com/deepseek-ai/deepseek-harness/releases'))
+  assert.ok(badSlug.harness.collect(
+    badSlug.tree,
+    (n) => n.type === 'button' && n.props.title === 'https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0',
+  ).length === 1)
 })
